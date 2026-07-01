@@ -234,6 +234,36 @@ def api_tasks_by_assignee():
     conn.close()
     return jsonify([dict(r) for r in rows])
 
+@app.route('/api/tasks/all')
+def api_tasks_all():
+    status = request.args.get('status', '')
+    assignee = request.args.get('assignee', '')
+    sort = request.args.get('sort', 'created_at')
+    order = request.args.get('order', 'desc')
+    limit = min(int(request.args.get('limit', 50)), 200)
+    offset = int(request.args.get('offset', 0))
+    conn = db_conn()
+    c = conn.cursor()
+    allowed_sorts = {'created_at', 'started_at', 'completed_at', 'title', 'status', 'assignee', 'consecutive_failures'}
+    if sort not in allowed_sorts:
+        sort = 'created_at'
+    if order not in ('asc', 'desc'):
+        order = 'desc'
+    where = []
+    params = []
+    if status:
+        statuses = status.split(',')
+        where.append('status IN (' + ','.join('?' for _ in statuses) + ')')
+        params.extend(statuses)
+    if assignee:
+        where.append('assignee = ?')
+        params.append(assignee)
+    where_clause = ('WHERE ' + ' AND '.join(where)) if where else ''
+    total = c.execute(f"SELECT COUNT(1) FROM tasks {where_clause}", params).fetchone()[0]
+    rows = c.execute(f"SELECT * FROM tasks {where_clause} ORDER BY {sort} {order} LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
+    conn.close()
+    return jsonify({'tasks': [dict(r) for r in rows], 'total': total, 'limit': limit, 'offset': offset})
+
 @app.route('/api/task/<task_id>')
 def api_task_detail(task_id):
     data = fetch_task_detail(task_id)
@@ -459,6 +489,25 @@ def api_bulk_kill():
     ok_count = sum(1 for r in results if r['ok'])
     return jsonify({'ok': True, 'count': len(ids), 'killed': ok_count, 'results': results, 'message': f'Kill {ok_count}/{len(ids)} tasks thành công'})
 
+@app.route('/api/tasks/bulk-delete', methods=['POST'])
+def api_bulk_delete():
+    ids = request.json.get('ids', []) if request.is_json else []
+    if not ids:
+        return jsonify({'ok': False, 'message': 'Không có task nào'}), 400
+    conn = db_conn(readonly=False)
+    c = conn.cursor()
+    try:
+        placeholders = ','.join('?' for _ in ids)
+        c.execute(f"DELETE FROM task_events WHERE task_id IN ({placeholders})", ids)
+        c.execute(f"DELETE FROM task_runs WHERE task_id IN ({placeholders})", ids)
+        c.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", ids)
+        conn.commit()
+        return jsonify({'ok': True, 'count': len(ids), 'message': f'Đã xoá {len(ids)} tasks'})
+    except Exception as e:
+        return jsonify({'ok': False, 'message': str(e)}), 500
+    finally:
+        conn.close()
+
 @app.route('/api/tasks', methods=['POST'])
 def api_create_task():
     data = request.json or {}
@@ -472,7 +521,7 @@ def api_create_task():
     conn = db_conn(readonly=False)
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO tasks (id, title, assignee, status, created_at) VALUES (?, ?, ?, 'ready', ?)",
+        c.execute("INSERT INTO tasks (id, title, assignee, status, created_at, workspace_kind) VALUES (?, ?, ?, 'ready', ?, 'scratch')",
                   (task_id, title, assignee or None, now))
         c.execute("INSERT INTO task_events (task_id, kind, created_at) VALUES (?, 'created', ?)",
                   (task_id, now))
@@ -503,6 +552,9 @@ def api_update_task(task_id):
         if 'assignee' in data and data['assignee'] != existing['assignee']:
             updates.append("assignee = ?")
             params.append(data['assignee'])
+        if 'body' in data and data['body'] != existing['body']:
+            updates.append("body = ?")
+            params.append(data['body'])
         if updates:
             params.append(task_id)
             c.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", params)
@@ -512,6 +564,24 @@ def api_update_task(task_id):
     except Exception as e:
         conn.close()
         return jsonify({'ok': False, 'message': str(e)}), 500
+
+@app.route('/api/task/<task_id>', methods=['DELETE'])
+def api_delete_task(task_id):
+    data = request.json or {}
+    if data.get('confirm') != 'CONFIRM':
+        return jsonify({'ok': False, 'message': 'Gõ CONFIRM để xác nhận xoá'}), 400
+    conn = db_conn(readonly=False)
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
+        c.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+        c.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.commit()
+        return jsonify({'ok': True, 'message': f'Đã xoá task {task_id[:10]} thành công'})
+    except Exception as e:
+        return jsonify({'ok': False, 'message': str(e)}), 500
+    finally:
+        conn.close()
 
 @app.route('/api/task/<task_id>/output', methods=['PATCH'])
 def api_update_task_output(task_id):
@@ -593,6 +663,94 @@ def api_files():
                     pass
     results.sort(key=lambda x: x['modified'], reverse=True)
     return jsonify(results)
+
+@app.route('/api/conversations')
+def api_conversations():
+    results = []
+    profiles_dir = os.path.join(HERMES_HOME, 'profiles')
+    if not os.path.exists(profiles_dir):
+        return jsonify([])
+    for name in os.listdir(profiles_dir):
+        state_path = os.path.join(profiles_dir, name, 'state.db')
+        if not os.path.exists(state_path):
+            continue
+        try:
+            sconn = sqlite3.connect(state_path)
+            sconn.row_factory = sqlite3.Row
+            sc = sconn.cursor()
+            sessions = sc.execute("""
+                SELECT id, title, model, started_at, ended_at, message_count,
+                       tool_call_count, input_tokens, output_tokens, estimated_cost_usd
+                FROM sessions ORDER BY started_at DESC LIMIT 50
+            """).fetchall()
+            sconn.close()
+            for s in sessions:
+                d = dict(s)
+                d['profile'] = name
+                results.append(d)
+        except Exception:
+            pass
+    results.sort(key=lambda x: x.get('started_at', 0) or 0, reverse=True)
+    return jsonify(results[:100])
+
+@app.route('/api/conversation/<profile>/<session_id>')
+def api_conversation_detail(profile, session_id):
+    state_path = os.path.join(HERMES_HOME, 'profiles', profile, 'state.db')
+    if not os.path.exists(state_path):
+        return jsonify({'ok': False, 'message': 'Profile không tồn tại'}), 404
+    try:
+        sconn = sqlite3.connect(state_path)
+        sconn.row_factory = sqlite3.Row
+        sc = sconn.cursor()
+        session = sc.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+        if not session:
+            sconn.close()
+            return jsonify({'ok': False, 'message': 'Session không tồn tại'}), 404
+        messages = sc.execute("""
+            SELECT id, role, content, timestamp, tool_calls, tool_name, reasoning
+            FROM messages WHERE session_id=? ORDER BY timestamp ASC
+        """, (session_id,)).fetchall()
+        sconn.close()
+        return jsonify({
+            'ok': True, 'session': dict(session), 'profile': profile,
+            'messages': [dict(m) for m in messages]
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+@app.route('/api/system-health')
+def api_system_health():
+    try:
+        import psutil
+        cpu = {'percent': psutil.cpu_percent(interval=0.5), 'count': psutil.cpu_count()}
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        uptime_sec = int(time.time() - psutil.boot_time())
+    except Exception:
+        cpu = {'percent': 0, 'count': 0}
+        mem = {'total': 0, 'used': 0, 'percent': 0}
+        disk = {'total': 0, 'used': 0, 'percent': 0}
+        uptime_sec = 0
+    # Check hermes processes
+    hermes = {'dispatcher_running': False, 'dispatcher_pid': None, 'orchestrator_running': False}
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmd = ' '.join(proc.info.get('cmdline') or [])
+                if 'dispatcher' in cmd.lower():
+                    hermes['dispatcher_running'] = True
+                    hermes['dispatcher_pid'] = proc.info['pid']
+                if 'orchestrator' in cmd.lower():
+                    hermes['orchestrator_running'] = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except Exception:
+        pass
+    return jsonify({
+        'cpu': cpu, 'memory': {'total': mem.total, 'used': mem.used, 'percent': mem.percent},
+        'disk': {'total': disk.total, 'used': disk.used, 'percent': disk.percent},
+        'uptime': uptime_sec, 'hermes': hermes
+    })
 
 @app.route('/api/cron/<name>/toggle', methods=['POST'])
 def api_cron_toggle(name):
@@ -2370,6 +2528,21 @@ a.task-link:hover {
       </div>
       <button class="icon-btn" onclick="openCreateTaskModal()" title="Tạo task mới" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="bi bi-plus-lg"></i></button>
       <button class="icon-btn" onclick="loadDashboard()" title="Refresh" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="bi bi-arrow-clockwise"></i></button>
+      <span id="healthIndicator" style="display:none;font-size:.65rem;color:var(--text2);display:inline-flex;gap:8px;align-items:center">
+        <span onclick="showSystemHealth()" style="cursor:pointer" title="CPU"><i class="bi bi-cpu"></i> <span id="cpuVal">—</span>%</span>
+        <span onclick="showSystemHealth()" style="cursor:pointer" title="RAM"><i class="bi bi-memory"></i> <span id="ramVal">—</span>%</span>
+        <span onclick="showSystemHealth()" style="cursor:pointer" title="Disk"><i class="bi bi-hdd"></i> <span id="diskVal">—</span>%</span>
+      </span>
+      <div style="display:flex;align-items:center;gap:4px;font-size:.62rem;color:var(--text3)">
+        <i class="bi bi-arrow-repeat" style="font-size:.7rem"></i>
+        <select id="autoRefreshSelect" onchange="setAutoRefresh(this.value)" style="background:transparent;border:none;color:var(--text3);font-size:.62rem;outline:none;cursor:pointer">
+          <option value="0">Tắt</option>
+          <option value="5">5s</option>
+          <option value="10" selected>10s</option>
+          <option value="30">30s</option>
+          <option value="60">60s</option>
+        </select>
+      </div>
       <span class="export-section">
         <button class="btn btn-sm btn-outline-secondary" onclick="exportTasks('csv')" title="Xuất CSV" style="font-size:.65rem"><i class="bi bi-download me-1"></i>CSV</button>
         <button class="btn btn-sm btn-outline-secondary" onclick="exportTasks('json')" title="Xuất JSON" style="font-size:.65rem"><i class="bi bi-download me-1"></i>JSON</button>
@@ -2386,12 +2559,16 @@ a.task-link:hover {
       <li class="nav-item"><button class="nav-link" id="tab-outputs" data-bs-toggle="tab" data-bs-target="#pane-outputs"><i class="bi bi-file-text"></i>Outputs</button></li>
       <li class="nav-item"><button class="nav-link" id="tab-workers" data-bs-toggle="tab" data-bs-target="#pane-workers"><i class="bi bi-people"></i>Workers</button></li>
       <li class="nav-item"><button class="nav-link" id="tab-files" data-bs-toggle="tab" data-bs-target="#pane-files"><i class="bi bi-folder"></i>Files</button></li>
+      <li class="nav-item"><button class="nav-link" id="tab-conversations" data-bs-toggle="tab" data-bs-target="#pane-conversations"><i class="bi bi-chat-dots"></i>Hội thoại</button></li>
     </ul>
 
     <div class="tab-content mt-3">
       <!-- System -->
       <div class="tab-pane fade show active" id="pane-system">
         <div class="stat-wrap" id="statCards"></div>
+        <span id="analyticsToggle" onclick="toggleAnalytics()" style="cursor:pointer;font-size:.65rem;color:var(--text3);user-select:none;display:none;margin-bottom:2px">
+          <i class="bi bi-chevron-up"></i> Thu gọn analytics
+        </span>
         <div class="analytics-row" id="analyticsRow"></div>
         <div class="row g-2 mb-3">
           <div class="col-lg-7">
@@ -2405,20 +2582,41 @@ a.task-link:hover {
           </div>
         </div>
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <div class="sec-title m-0"><i class="bi bi-exclamation-triangle"></i>Tác vụ treo <span class="badge bg-danger ms-1" id="staleCountBadge">0</span></div>
+          <ul class="nav nav-tabs border-0 gap-0" id="taskSubTabs" style="font-size:.72rem">
+            <li class="nav-item"><button class="nav-link active" id="subtab-stale" onclick="switchSubTab('stale')"><i class="bi bi-exclamation-triangle"></i>Treo <span class="badge bg-danger ms-1" id="staleCountBadge">0</span></button></li>
+            <li class="nav-item"><button class="nav-link" id="subtab-all" onclick="switchSubTab('all')"><i class="bi bi-list-task"></i>Tất cả <span class="badge bg-secondary ms-1" id="allTaskCountBadge">0</span></button></li>
+            <li class="nav-item"><button class="nav-link" id="subtab-done" onclick="switchSubTab('done')"><i class="bi bi-check-circle"></i>Xong <span class="badge bg-secondary ms-1" id="doneTaskCountBadge">0</span></button></li>
+          </ul>
           <div class="d-flex gap-2">
-            <div class="filter-bar" id="taskFilterBar">
-              <span class="filter-chip active" onclick="setTaskFilter('all')" id="filterAll">All</span>
-              <span class="filter-chip" onclick="setTaskFilter('running')" id="filterRunning">Đang chạy</span>
-              <span class="filter-chip" onclick="setTaskFilter('stale')" id="filterStale">Treo</span>
-              <span class="filter-chip" onclick="setTaskFilter('error')" id="filterError">Lỗi</span>
-              <span class="filter-chip" onclick="setTaskFilter('done')" id="filterDone">Xong</span>
-            </div>
             <button class="btn btn-sm btn-outline-warning d-none" id="killSelectedBtn" onclick="killSelected()"><i class="bi bi-x-lg me-1"></i>Kill đã chọn (<span id="selectedCount">0</span>)</button>
+            <button class="btn btn-sm btn-outline-danger d-none" id="deleteSelectedBtn" onclick="deleteSelected()"><i class="bi bi-trash3 me-1"></i>Xoá đã chọn (<span id="deleteSelectedCount">0</span>)</button>
             <button class="btn btn-sm btn-outline-danger" onclick="killAllDead()"><i class="bi bi-trash3 me-1"></i>Kill all</button>
           </div>
         </div>
-        <div class="table-wrap"><table class="table"><thead><tr><th style="width:28px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th><th>ID</th><th>Tiêu đề</th><th>Người phụ trách</th><th style="width:50px">PID</th><th style="width:55px">Age</th><th style="width:80px">Lý do</th><th style="width:110px"></th></tr></thead><tbody id="staleTable"></tbody></table></div>
+        <div>
+          <div class="sub-pane" id="pane-sub-stale" style="display:block">
+            <div class="table-wrap"><table class="table"><thead><tr><th style="width:28px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th><th>ID</th><th>Tiêu đề</th><th>Người phụ trách</th><th style="width:50px">PID</th><th style="width:55px">Age</th><th style="width:80px">Lý do</th><th style="width:110px"></th></tr></thead><tbody id="staleTable"></tbody></table></div>
+          </div>
+          <div class="sub-pane" id="pane-sub-all" style="display:none">
+            <div class="d-flex gap-2 mb-2 align-items-center">
+              <select id="allTaskFilter" onchange="loadAllTasks()" style="font-size:.72rem;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-sm);padding:.2rem .5rem">
+                <option value="">Tất cả trạng thái</option>
+                <option value="ready">Sẵn sàng</option>
+                <option value="running">Đang chạy</option>
+                <option value="blocked">Chặn</option>
+                <option value="stale">Treo</option>
+                <option value="done">Xong</option>
+                <option value="error">Lỗi</option>
+                <option value="killed">Đã kill</option>
+              </select>
+              <span style="font-size:.65rem;color:var(--text3)" id="allTaskInfo"></span>
+            </div>
+            <div class="table-wrap" style="max-height:500px;overflow-y:auto"><table class="table"><thead style="position:sticky;top:0;z-index:2;background:var(--surface2)"><tr><th style="width:28px"><input type="checkbox" onchange="toggleAllCheckboxes(this,'allTaskCheck')"></th><th onclick="sortAllTasks('created_at')" style="cursor:pointer">Tạo lúc <i class="bi bi-arrow-down-up" style="font-size:.6rem"></i></th><th onclick="sortAllTasks('title')" style="cursor:pointer">Tiêu đề</th><th onclick="sortAllTasks('assignee')" style="cursor:pointer">Người phụ trách</th><th onclick="sortAllTasks('status')" style="cursor:pointer">Trạng thái</th><th onclick="sortAllTasks('started_at')" style="cursor:pointer">Bắt đầu</th></tr></thead><tbody id="allTaskTable"></tbody></table></div>
+          </div>
+          <div class="sub-pane" id="pane-sub-done" style="display:none">
+            <div class="table-wrap"><table class="table"><thead><tr><th style="width:28px"><input type="checkbox" onchange="toggleAllCheckboxes(this,'doneTaskCheck')"></th><th>Tiêu đề</th><th>Người phụ trách</th><th>Xong lúc</th></tr></thead><tbody id="doneTaskTable"></tbody></table></div>
+          </div>
+        </div>
       </div>
 
       <!-- Kanban -->
@@ -2465,6 +2663,15 @@ a.task-link:hover {
         </div>
         <div class="table-wrap"><table class="table"><thead><tr><th style="width:36px">STT</th><th>Tên file</th><th>Đường dẫn</th><th style="width:80px">Kích thước</th><th style="width:120px">Sửa đổi</th><th style="width:80px"></th></tr></thead><tbody id="fileTable"></tbody></table></div>
       </div>
+
+      <!-- Conversations -->
+      <div class="tab-pane fade" id="pane-conversations">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div class="sec-title m-0"><i class="bi bi-chat-dots"></i>Hội thoại Agent</div>
+          <span><span class="refresh-dot" id="convRefreshDot"></span><small class="text-secondary" style="font-size:.7rem" id="convRefreshLabel"></small></span>
+        </div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Profile</th><th>Tiêu đề</th><th>Model</th><th style="width:60px">Messages</th><th style="width:50px">Tokens</th><th style="width:70px">Cost</th><th style="width:100px">Thời gian</th><th style="width:40px"></th></tr></thead><tbody id="conversationTable"></tbody></table></div>
+      </div>
     </div>
   </div>
 </div>
@@ -2488,7 +2695,8 @@ a.task-link:hover {
     </div>
     <div class="mb-3">
       <label class="form-label" style="font-size:.75rem;color:var(--text2)">Người phụ trách</label>
-      <input type="text" class="form-control" id="createTaskAssignee" placeholder="Tên người phụ trách..." style="background:var(--bg2);border-color:var(--border);color:var(--text);font-size:.82rem">
+      <input type="text" class="form-control" id="createTaskAssignee" placeholder="Tên người phụ trách..." list="workerDatalist" style="background:var(--bg2);border-color:var(--border);color:var(--text);font-size:.82rem">
+      <datalist id="workerDatalist"></datalist>
     </div>
     <div class="mb-3">
       <label class="form-label" style="font-size:.75rem;color:var(--text2)">Mô tả</label>
@@ -2499,6 +2707,29 @@ a.task-link:hover {
     <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Huỷ</button>
     <button class="btn btn-sm btn-primary" id="createTaskBtn" onclick="submitCreateTask()"><i class="bi bi-check-lg me-1"></i>Tạo task</button>
   </div>
+</div></div></div>
+
+<div class="modal fade" id="deleteTaskModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+  <div class="modal-header" style="border-bottom-color:var(--red)"><h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill" style="color:var(--red)"></i> Xoá task</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body">
+    <p style="color:var(--red);font-size:.82rem">Task sẽ bị xoá vĩnh viễn! Hành động này <strong>không thể hoàn tác</strong>.</p>
+    <p style="font-size:.72rem;color:var(--text2)">Gõ <strong>CONFIRM</strong> để xác nhận:</p>
+    <input type="text" class="form-control" id="deleteConfirmInput" placeholder="Gõ CONFIRM..." style="background:var(--bg2);border-color:var(--border);color:var(--text);font-size:.9rem;text-align:center;letter-spacing:3px;text-transform:uppercase" oninput="document.getElementById('deleteTaskBtn').disabled=this.value!=='CONFIRM'">
+  </div>
+  <div class="modal-footer" style="border-color:var(--border-light)">
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Huỷ</button>
+    <button class="btn btn-sm btn-outline-danger" id="deleteTaskBtn" disabled onclick="confirmDeleteTask()"><i class="bi bi-trash3 me-1"></i> Xoá vĩnh viễn</button>
+  </div>
+</div></div></div>
+
+<div class="modal fade" id="systemHealthModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-sm"><div class="modal-content">
+  <div class="modal-header"><h5 class="modal-title"><i class="bi bi-activity me-1"></i>System Health</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body" id="systemHealthBody"></div>
+</div></div></div>
+
+<div class="modal fade" id="conversationModal" tabindex="-1"><div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable"><div class="modal-content">
+  <div class="modal-header"><h5 class="modal-title" id="convModalTitle"></h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body" id="convModalBody"></div>
 </div></div></div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -2674,7 +2905,7 @@ async function loadDashboard() {
       {label:'Cron lỗi', value:data.cron_errors, sub:'/'+crons.length+' jobs', icon:'bi-x-circle', color:data.cron_errors>0?'#f87171':'#7878aa'},
     ];
     document.getElementById('statCards').innerHTML = cards.map(c => `
-      <div class="stat-card">
+      <div class="stat-card" style="cursor:pointer" onclick="toggleAnalytics()">
         <div class="stat-glow" style="background:${c.color}"></div>
         <div class="stat-row">
           <div>
@@ -2931,10 +3162,10 @@ async function openTaskDetail(id) {
 }
 
 function switchModalTab(name) {
-  const tabNames = {output:'Output', events:'Sự kiện', runs:'Lần chạy'};
+  const tabNames = {output:'Output', events:'Sự kiện', runs:'Lần chạy', notes:'Notes'};
   document.querySelectorAll('.modal-tab').forEach(b => {
     const txt = b.textContent.trim().toLowerCase();
-    const match = (name==='output'&&txt.includes('output')) || (name==='events'&&txt.includes('sự kiện')) || (name==='runs'&&txt.includes('lần chạy'));
+    const match = (name==='output'&&txt.includes('output')) || (name==='events'&&txt.includes('sự kiện')) || (name==='runs'&&txt.includes('lần chạy')) || (name==='notes'&&txt.includes('notes'));
     b.classList.toggle('active', match);
   });
   document.querySelectorAll('.modal-tab-pane').forEach(p => {
@@ -3379,6 +3610,28 @@ function renderAnalytics(d) {
     </div>`;
 }
 
+// === Toggle Analytics visibility ===
+window._analyticsVisible = localStorage.getItem('analyticsVisible') !== 'false';
+function toggleAnalytics() {
+  window._analyticsVisible = !window._analyticsVisible;
+  localStorage.setItem('analyticsVisible', window._analyticsVisible);
+  const row = document.getElementById('analyticsRow');
+  const toggle = document.getElementById('analyticsToggle');
+  if (row) row.style.display = window._analyticsVisible ? '' : 'none';
+  if (toggle) {
+    toggle.querySelector('i').className = 'bi ' + (window._analyticsVisible ? 'bi-chevron-up' : 'bi-chevron-down');
+    toggle.childNodes[1] && (toggle.childNodes[1].textContent = window._analyticsVisible ? ' Thu gọn analytics' : ' Mở analytics');
+  }
+}
+(function initAnalytics() {
+  if (!window._analyticsVisible) {
+    document.getElementById('analyticsRow').style.display = 'none';
+    var t = document.getElementById('analyticsToggle');
+    if (t) { t.querySelector('i').className = 'bi bi-chevron-down'; t.childNodes[1].textContent = ' Mở analytics'; }
+  }
+  document.getElementById('analyticsToggle').style.display = 'inline';
+})();
+
 // === Filter ===
 window._taskFilter = 'all';
 function setTaskFilter(val) {
@@ -3440,9 +3693,292 @@ loadDashboard = async function() {
   await loadAnalytics();
 };
 
+// === Enhanced Task Table ===
+let _allTaskSort = 'created_at';
+let _allTaskOrder = 'desc';
+let _allTaskOffset = 0;
+let _conversationsData = null;
+
+async function loadAllTasks() {
+  const status = document.getElementById('allTaskFilter').value;
+  try {
+    const r = await fetch(`/api/tasks/all?status=${status}&sort=${_allTaskSort}&order=${_allTaskOrder}&limit=50`);
+    const d = await r.json();
+    const el = document.getElementById('allTaskTable');
+    document.getElementById('allTaskInfo').textContent = `${d.total} tasks`;
+    document.getElementById('allTaskCountBadge').textContent = d.total;
+    el.innerHTML = d.tasks.length
+      ? d.tasks.map(t => `<tr>
+          <td><input type="checkbox" class="allTaskCheck" value="${t.id}" onclick="event.stopPropagation()" onchange="updateSelected()"></td>
+          <td style="font-size:.68rem;color:var(--text3);cursor:pointer" onclick="openTaskDetail('${t.id}')">${fmtTime(t.created_at)}</td>
+          <td style="cursor:pointer" onclick="openTaskDetail('${t.id}')">${h(t.title||'(no title)').substring(0,60)}</td>
+          <td>${assigneeCell(t.assignee)}</td>
+          <td>${badge(t.status)}</td>
+          <td style="font-size:.68rem;color:var(--text3)">${fmtRelative(t.started_at)}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="6" class="empty-state">Không có task nào</td></tr>';
+    // Load done count
+    document.getElementById('doneTaskTable').innerHTML = d.tasks.filter(t => t.status === 'done').slice(0,20)
+      .map(t => `<tr>
+          <td><input type="checkbox" class="doneTaskCheck" value="${t.id}" onclick="event.stopPropagation()" onchange="updateSelected()"></td>
+          <td style="cursor:pointer" onclick="openTaskDetail('${t.id}')">${h(t.title).substring(0,50)}</td>
+          <td>${assigneeCell(t.assignee)}</td>
+          <td style="font-size:.68rem;color:var(--text3)">${fmtTime(t.completed_at)}</td>
+        </tr>`).join('') || '<tr><td colspan="4" class="empty-state">Chưa có task xong</td></tr>';
+    const doneCount = d.total ? d.tasks.filter(t => t.status === 'done').length : 0;
+    const totalCount = d.total || 0;
+    document.getElementById('doneTaskCountBadge').textContent = doneCount || '0';
+  } catch(e) {}
+}
+
+function sortAllTasks(col) {
+  if (_allTaskSort === col) { _allTaskOrder = _allTaskOrder === 'asc' ? 'desc' : 'asc'; }
+  else { _allTaskSort = col; _allTaskOrder = 'desc'; }
+  document.getElementById('allTaskTable').innerHTML = '<tr><td colspan="5" class="empty-state">Đang tải...</td></tr>';
+  loadAllTasks();
+}
+
+// === Conversations ===
+async function loadConversations() {
+  try {
+    const r = await fetch('/api/conversations');
+    _conversationsData = await r.json();
+    document.getElementById('convRefreshLabel').textContent = new Date().toLocaleTimeString('vi-VN');
+    const el = document.getElementById('conversationTable');
+    if (!_conversationsData || !_conversationsData.length) {
+      el.innerHTML = '<tr><td colspan="8" class="empty-state">Không có hội thoại nào</td></tr>';
+      return;
+    }
+    el.innerHTML = _conversationsData.map((c, i) => {
+      const cost = c.estimated_cost_usd ? '$' + c.estimated_cost_usd.toFixed(4) : '—';
+      return `<tr>
+        <td>${avatar(c.profile,'sm')} ${h(c.profile)}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(c.title||'(no title)')}</td>
+        <td style="font-size:.68rem;color:var(--text3)">${h(c.model||'—')}</td>
+        <td>${c.message_count||0}</td>
+        <td style="font-size:.68rem">${(c.input_tokens||0)+(c.output_tokens||0)}</td>
+        <td style="font-size:.68rem">${cost}</td>
+        <td style="font-size:.7rem;color:var(--text2)">${fmtRelative(c.started_at)}</td>
+        <td><button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="openConversation('${c.profile}','${c.id}')"><i class="bi bi-eye"></i></button></td>
+      </tr>`;
+    }).join('');
+  } catch(e) { document.getElementById('conversationTable').innerHTML = '<tr><td colspan="8" class="empty-state">Lỗi: '+e.message+'</td></tr>'; }
+}
+
+async function openConversation(profile, sessionId) {
+  try {
+    const r = await fetch(`/api/conversation/${encodeURIComponent(profile)}/${encodeURIComponent(sessionId)}`);
+    const d = await r.json();
+    if (!d.ok) { toast(d.message, 'danger'); return; }
+    document.getElementById('convModalTitle').innerHTML = `<i class="bi bi-chat-dots me-1"></i>${h(d.session.title||'Hội thoại')} ${avatar(profile,'sm')} ${h(profile)}`;
+    const messages = d.messages || [];
+    document.getElementById('convModalBody').innerHTML = messages.length
+      ? '<div class="conv-chat">'+messages.map(m => {
+          const isUser = m.role === 'user';
+          const isTool = m.role === 'tool';
+          const content = m.content || '';
+          const hasReasoning = m.reasoning && m.reasoning.trim();
+          const side = isUser ? 'right' : (isTool ? 'center' : 'left');
+          const bg = isUser ? 'var(--accent-subtle)' : (isTool ? 'var(--surface2)' : 'var(--surface)');
+          const border = isUser ? 'var(--accent)' : 'var(--border)';
+          return `<div class="conv-msg conv-${side}" style="background:${bg};border:1px solid ${border};border-radius:var(--radius-sm);padding:.5rem .65rem;margin-bottom:.5rem;max-width:${isTool?'100%':'80%'};margin-${side}:0">
+            <div style="font-size:.62rem;color:var(--text3);margin-bottom:2px">${isUser?'User':'Agent'} · ${fmtTime(m.timestamp)}</div>
+            <div class="output-block" style="max-height:300px;font-size:.76rem;background:transparent;border:none;padding:0;margin:0">${renderMd(content)}</div>
+            ${hasReasoning ? `<details style="margin-top:4px;font-size:.68rem"><summary style="color:var(--text3);cursor:pointer">Reasoning</summary><pre style="margin:4px 0;padding:.4rem;font-size:.68rem;max-height:150px;overflow-y:auto;background:var(--bg2)">${h(m.reasoning)}</pre></details>` : ''}
+            ${m.tool_calls ? `<div style="font-size:.65rem;color:var(--accent);margin-top:2px"><i class="bi bi-wrench"></i> ${h(m.tool_name||'tool_call')}</div>` : ''}
+          </div>`;
+        }).join('')+'</div>'
+      : '<div class="empty-state">Không có tin nhắn</div>';
+    new bootstrap.Modal(document.getElementById('conversationModal')).show();
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+
+// === Delete Task ===
+let _deletingTaskId = null;
+function deleteTask(id) {
+  _deletingTaskId = id;
+  document.getElementById('deleteConfirmInput').value = '';
+  document.getElementById('deleteTaskBtn').disabled = true;
+  new bootstrap.Modal(document.getElementById('deleteTaskModal')).show();
+}
+async function confirmDeleteTask() {
+  const id = _deletingTaskId;
+  if (!id) return;
+  const btn = document.getElementById('deleteTaskBtn');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Đang xoá...';
+  try {
+    const r = await fetch(`/api/task/${id}`, { method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({confirm:'CONFIRM'}) });
+    const d = await r.json();
+    if (d.ok) {
+      toast(d.message, 'success');
+      bootstrap.Modal.getInstance(document.getElementById('deleteTaskModal')).hide();
+      var tm = bootstrap.Modal.getInstance(document.getElementById('taskModal'));
+      if (tm) tm.hide();
+      loadDashboard();
+    } else { toast(d.message, 'danger'); }
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+  btn.disabled = false; btn.innerHTML = '<i class="bi bi-trash3 me-1"></i> Xoá vĩnh viễn';
+}
+async function deleteSelected() {
+  const ids = getSelectedIds();
+  if (!ids.length) { toast('Chọn task để xoá', 'warning'); return; }
+  if (!confirm(`Xoá ${ids.length} task? Hành động này không thể hoàn tác!`)) return;
+  try {
+    const r = await fetch('/api/tasks/bulk-delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
+    const d = await r.json();
+    toast(d.message, d.ok ? 'success' : 'danger');
+    loadDashboard();
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+
+// === System Health ===
+async function loadSystemHealth() {
+  try {
+    const r = await fetch('/api/system-health');
+    const d = await r.json();
+    document.getElementById('cpuVal').textContent = d.cpu.percent;
+    document.getElementById('ramVal').textContent = d.memory.percent;
+    document.getElementById('diskVal').textContent = d.disk.percent;
+    document.getElementById('healthIndicator').style.display = 'inline-flex';
+    window._healthData = d;
+  } catch(e) { /* silent */ }
+}
+function showSystemHealth() {
+  const d = window._healthData;
+  if (!d) return;
+  const fmt = (b) => b >= 1073741824 ? (b/1073741824).toFixed(1)+'GB' : (b/1048576).toFixed(0)+'MB';
+  document.getElementById('systemHealthBody').innerHTML = `
+    <div style="display:grid;gap:.75rem">
+      <div><div class="analytics-mini-label">CPU</div><div class="analytics-mini-val">${d.cpu.percent}%</div><div class="health-bar-wrap"><div class="health-bar-fill" style="width:${d.cpu.percent}%;background:${d.cpu.percent>80?'var(--red)':'var(--accent)'}"></div></div><div style="font-size:.65rem;color:var(--text3)">${d.cpu.count} cores</div></div>
+      <div><div class="analytics-mini-label">RAM</div><div class="analytics-mini-val">${d.memory.percent}%</div><div class="health-bar-wrap"><div class="health-bar-fill" style="width:${d.memory.percent}%;background:${d.memory.percent>80?'var(--red)':'var(--accent)'}"></div></div><div style="font-size:.65rem;color:var(--text3)">${fmt(d.memory.used)} / ${fmt(d.memory.total)}</div></div>
+      <div><div class="analytics-mini-label">Disk</div><div class="analytics-mini-val">${d.disk.percent}%</div><div class="health-bar-wrap"><div class="health-bar-fill" style="width:${d.disk.percent}%;background:${d.disk.percent>80?'var(--red)':'var(--accent)'}"></div></div><div style="font-size:.65rem;color:var(--text3)">${fmt(d.disk.used)} / ${fmt(d.disk.total)}</div></div>
+      <div><div class="analytics-mini-label">Uptime</div><div>${Math.floor(d.uptime/86400)}d ${Math.floor(d.uptime%86400/3600)}h ${Math.floor(d.uptime%3600/60)}m</div></div>
+      <div><div class="analytics-mini-label">Hermes Process</div><div><span class="badge-dot" style="background:${d.hermes.dispatcher_running?'var(--green)1a':'var(--red)1a'};color:${d.hermes.dispatcher_running?'var(--green)':'var(--red)'};border:1px solid ${d.hermes.dispatcher_running?'var(--green)33':'var(--red)33'}"><span class="status-dot" style="background:${d.hermes.dispatcher_running?'var(--green)':'var(--red)'}"></span>Dispatcher ${d.hermes.dispatcher_running?'Chạy':'Tắt'}</span></div></div>
+    </div>`;
+  new bootstrap.Modal(document.getElementById('systemHealthModal')).show();
+}
+
+// === Auto Refresh ===
+let _autoRefreshTimer = null;
+function setAutoRefresh(seconds) {
+  seconds = parseInt(seconds);
+  localStorage.setItem('autoRefresh', seconds);
+  if (_autoRefreshTimer) { clearInterval(_autoRefreshTimer); _autoRefreshTimer = null; }
+  if (seconds > 0) {
+    _autoRefreshTimer = setInterval(() => { loadDashboard(); }, seconds * 1000);
+  }
+}
+(function initAutoRefresh() {
+  const saved = localStorage.getItem('autoRefresh');
+  if (saved !== null) {
+    const sel = document.getElementById('autoRefreshSelect');
+    sel.value = saved;
+    setAutoRefresh(saved);
+  } else { setAutoRefresh(10); }
+})();
+
+// === Update openCreateTaskModal with assignee autocomplete ===
+const _origOpenCreateTaskModal = openCreateTaskModal;
+openCreateTaskModal = async function() {
+  _origOpenCreateTaskModal();
+  try {
+    const r = await fetch('/api/workers');
+    const workers = await r.json();
+    document.getElementById('workerDatalist').innerHTML = workers.map(w => `<option value="${h(w.profile)}">${w.profile} (${w.task_count} tasks)</option>`).join('');
+  } catch(e) {}
+};
+
+// === Update selectAll toggle for delete button (count all checkbox classes) ===
+const _origUpdateSelected = updateSelected;
+updateSelected = function() {
+  const nAll = document.querySelectorAll('.stale-check:checked, .allTaskCheck:checked, .doneTaskCheck:checked').length;
+  const nStale = document.querySelectorAll('.stale-check:checked').length;
+  // Original kill button (stale only)
+  const killBtn = document.getElementById('killSelectedBtn');
+  if (nStale) { killBtn.classList.remove('d-none'); document.getElementById('selectedCount').textContent = nStale; }
+  else { killBtn.classList.add('d-none'); }
+  // Delete button (all tables)
+  const delBtn = document.getElementById('deleteSelectedBtn');
+  if (nAll) { delBtn.classList.remove('d-none'); document.getElementById('deleteSelectedCount').textContent = nAll; }
+  else { delBtn.classList.add('d-none'); }
+};
+
+// === Update tab switch for conversations sub-tabs + load on init ===
+const _origTabHandler = document.querySelectorAll('[data-bs-toggle="tab"]');
+document.querySelectorAll('[data-bs-toggle="tab"]').forEach(tab => {
+  tab.addEventListener('shown.bs.tab', function(e) {
+    if (e.target.id === 'tab-conversations') loadConversations();
+  });
+});
+
+// === Add Notes tab in task detail (extend openTaskDetail) ===
+window._taskDetail = null;
+const _origOpenTaskDetail3 = openTaskDetail;
+openTaskDetail = async function(id) {
+  const r = await fetch(`/api/task/${id}`);
+  const d = await r.json();
+  window._taskDetail = d.task;
+  await _origOpenTaskDetail3(id);
+  // Add Notes tab after runs tab
+  const tabsContainer = document.querySelector('.modal-tabs');
+  const panesContainer = document.getElementById('modalBody');
+  if (!tabsContainer || panesContainer.querySelector('#pane-notes')) return;
+  const noteTab = document.createElement('button');
+  noteTab.className = 'modal-tab';
+  noteTab.innerHTML = '<i class="bi bi-sticky"></i> Notes';
+  noteTab.onclick = function() { switchModalTab('notes'); return false; };
+  tabsContainer.appendChild(noteTab);
+  const notePane = document.createElement('div');
+  notePane.className = 'modal-tab-pane';
+  notePane.id = 'pane-notes';
+  const task = window._taskDetail;
+  notePane.innerHTML = `<div style="margin-bottom:6px;font-size:.72rem;color:var(--text2)"><i class="bi bi-info-circle"></i> Thêm ghi chú cho task này (lưu vào body field)</div>
+    <textarea class="form-control" id="notesTextArea" rows="5" style="font-family:var(--font-sans);font-size:.82rem;background:var(--bg2);border-color:var(--border);color:var(--text);resize:vertical">${h((task&&task.body)||'')}</textarea>
+    <div style="margin-top:6px"><button class="edit-save-btn" onclick="saveTaskNotes()"><i class="bi bi-check"></i> Lưu notes</button></div>`;
+  panesContainer.insertBefore(notePane, panesContainer.querySelector('#pane-runs').nextSibling);
+};
+
+// === Sub-tab switching for System pane ===
+function switchSubTab(name) {
+  document.querySelectorAll('#pane-system .sub-pane').forEach(p => p.style.display = 'none');
+  const target = document.getElementById('pane-sub-' + name);
+  if (target) target.style.display = 'block';
+  document.querySelectorAll('#taskSubTabs .nav-link').forEach(t => t.classList.remove('active'));
+  const tab = document.getElementById('subtab-' + name);
+  if (tab) tab.classList.add('active');
+  if (name === 'all' || name === 'done') loadAllTasks();
+}
+
+// === Bulk checkbox toggle for all/done tables ===
+function toggleAllCheckboxes(master, className) {
+  document.querySelectorAll('.' + className).forEach(cb => cb.checked = master.checked);
+  updateSelected();
+}
+
+// === Update getSelectedIds to include all checkboxes ===
+const _origGetSelectedIds = getSelectedIds;
+getSelectedIds = function() {
+  const ids = _origGetSelectedIds();
+  document.querySelectorAll('.allTaskCheck:checked, .doneTaskCheck:checked').forEach(cb => ids.push(cb.value));
+  return ids;
+};
+
+async function saveTaskNotes() {
+  const ta = document.getElementById('notesTextArea');
+  if (!ta) return;
+  const id = window._taskOutputData?.taskId;
+  if (!id) return;
+  try {
+    const r = await fetch(`/api/task/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({body: ta.value}) });
+    const d = await r.json();
+    toast(d.message, d.ok ? 'success' : 'danger');
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+
 setInterval(() => { initTooltips(); }, 2000);
 initTooltips();
 loadDashboard();
+loadSystemHealth();
 </script>
 </body>
 </html>"""
