@@ -2797,8 +2797,8 @@ const LANG = {
     health_disp:'Dispatcher', health_disp_run:'Chạy', health_disp_off:'Tắt', health_cores:'cores',
     empty_no_tasks:'Không có tác vụ', empty_no_data:'Chưa có dữ liệu',
     empty_no_cron:'Không có dữ liệu cron', empty_no_output:'Chưa có output',
-    empty_no_events:'Không có sự kiện', empty_no_conv:'Không có hội thoại nào',
-    empty_no_files:'Không có file .md nào', empty_no_msg:'Không có tin nhắn',
+    empty_no_events:_i('empty_no_events','Không có sự kiện'), empty_no_conv:'Không có hội thoại nào',
+    empty_no_files:_i('empty_no_files','Không có file .md nào'), empty_no_msg:'Không có tin nhắn',
     empty_error:'Lỗi',
     confirm_retry:'Retry task', confirm_kill:'Kill task', confirm_claim:'Claim task',
     confirm_enqueue:'Enqueue task', confirm_complete:'Complete task', confirm_delete:'Xoá',
@@ -2817,6 +2817,17 @@ const LANG = {
     system_health_title:'System Health', system_health_cores:'cores', system_health_disp:'Dispatcher',
     system_health_disp_run:'Chạy', system_health_disp_off:'Tắt',
     form_title_required:'Vui lòng nhập tiêu đề',
+    empty_no_workers:_i('empty_no_workers','Không có worker nào'),     empty_no_tasks_filter:'Không có tác vụ',
+    empty_no_task:'Không có task', empty_no_runs:'Không có lần chạy',
+    confirm_kill_tasks:'Kill', confirm_kill_tasks_label:'Kill', confirm_del_selected:'Xoá đã chọn',
+    toast_copied_clipboard:'Đã copy vào clipboard', toast_no_content_copy:'Không có nội dung để copy',
+    toast_no_task_kill:'Không có task để kill', toast_select_del:'Chọn task để xoá',
+    toast_enter_title:'Vui lòng nhập tiêu đề', toast_error_load:'Lỗi tải dữ liệu',
+    modal_tab_output:'Output', modal_tab_events:'Sự kiện', modal_tab_runs:'Lần chạy', modal_tab_notes:'Notes',
+    health_hermes_process:'Hermes Process', health_hermes_disp:'Dispatcher',
+    health_hermes_disp_run:'Chạy', health_hermes_disp_off:'Tắt',
+    worker_status_text:'Trạng thái', worker_status_run:'Đang chạy', worker_status_off:'Ngoại tuyến',
+    kanban_load_error:'Lỗi:', kanban_no_data:'Chưa có dữ liệu',
   },
   en: {
     tab_system:'System', tab_kanban:'Kanban', tab_cron:'Cron', tab_outputs:'Outputs',
@@ -2889,6 +2900,17 @@ const LANG = {
     system_health_title:'System Health', system_health_cores:'cores', system_health_disp:'Dispatcher',
     system_health_disp_run:'Running', system_health_disp_off:'Stopped',
     form_title_required:'Please enter a title',
+    empty_no_workers:'No workers',     empty_no_tasks_filter:'No tasks',
+    empty_no_task:'No tasks', empty_no_runs:'No runs',
+    confirm_kill_tasks:'Kill', confirm_kill_tasks_label:'Kill', confirm_del_selected:'Delete Selected',
+    toast_copied_clipboard:'Copied to clipboard', toast_no_content_copy:'No content to copy',
+    toast_no_task_kill:'No tasks to kill', toast_select_del:'Select tasks to delete',
+    toast_enter_title:'Please enter a title', toast_error_load:'Error loading data',
+    modal_tab_output:'Output', modal_tab_events:'Events', modal_tab_runs:'Runs', modal_tab_notes:'Notes',
+    health_hermes_process:'Hermes Process', health_hermes_disp:'Dispatcher',
+    health_hermes_disp_run:'Running', health_hermes_disp_off:'Stopped',
+    worker_status_text:'Status', worker_status_run:'Running', worker_status_off:'Offline',
+    kanban_load_error:'Error:', kanban_no_data:'No data',
   }
 };
 let currentLang = localStorage.getItem('lang') || 'vi';
@@ -3145,7 +3167,7 @@ async function loadDashboard() {
           const isStale = r.status === 'stale';
           return `<tr class="${isStale?'stale-row':''}"><td><input type="checkbox" class="stale-check" value="${r.id}" onchange="updateSelected()"></td><td><code class="task-id" onclick="openTaskDetail('${r.id}')">${h(r.id,'').substring(0,12)}</code></td><td>${h(r.title,'(no title)')}</td><td>${assigneeCell(r.assignee)}</td><td>${h(r.worker_pid)}</td><td>${h(r.age_human)}</td><td>${r.reason ? '<span class="badge-dot" style="background:'+(r.reason==='timeout'?'var(--yellow)':'var(--red)')+'1a;color:'+(r.reason==='timeout'?'var(--yellow)':'var(--red)')+';border:1px solid '+(r.reason==='timeout'?'var(--yellow)':'var(--red)')+'33"><span class="status-dot" style="background:'+(r.reason==='timeout'?'var(--yellow)':'var(--red)')+'"></span>'+r.reason+'</span>' : '<span style="color:var(--text3)">—</span>'}</td><td><button class="btn btn-sm btn-outline-warning me-1 py-0 px-2" onclick="retryTask('${r.id}')"><i class="bi bi-arrow-clockwise"></i></button><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="killTask('${r.id}')"><i class="bi bi-x-lg"></i></button></td></tr>`;
         }).join('')
-      : '<tr><td colspan="8" class="empty-state">'+EMPTY_ICONS.noTasks+'Không có tác vụ'+(window._taskFilter!=='all'?' ('+window._taskFilter+')':'')+'</td></tr>';
+      : '<tr><td colspan="8" class="empty-state">'+EMPTY_ICONS.noTasks+_i('empty_no_tasks','Không có tác vụ')+(window._taskFilter!=='all'?' ('+window._taskFilter+')':'')+'</td></tr>';
     document.getElementById('staleCountBadge').textContent = t.stale_count;
     document.getElementById('selectAll').checked = false;
     document.getElementById('killSelectedBtn').classList.add('d-none');
@@ -3179,8 +3201,8 @@ async function loadDashboard() {
         var ts = t.completed_at || t.started_at;
         var shortTitle = (t.title||t.id).substring(0,45)+(t.title&&t.title.length>45?'...':'');
         return '<tr><td><span class="row-idx">'+(i+1)+'</span></td><td><a href="#" onclick="openTaskDetail(\''+t.id+'\');return false" class="task-link" style="font-size:.72rem">'+h(shortTitle)+'</a></td><td>'+badge(t.status)+'</td><td style="color:var(--text3);font-size:.68rem;white-space:nowrap" title="'+fmtTime(ts)+'">'+fmtRelative(ts)+'</td></tr>';
-      }).join('') || '<tr><td colspan="4" class="empty-state">'+EMPTY_ICONS.noData+'Chưa có dữ liệu</td></tr>';
-    } catch(_) { /* ignore recent fetch errors */ }
+      }).join('') || '<tr><td colspan="4" class="empty-state">'+EMPTY_ICONS.noData+_i('empty_no_data','Chưa có dữ liệu')+'</td></tr>';
+  } catch(_) { /* ignore recent fetch errors */ }
 
     renderKanban(board);
     renderCron(crons);
@@ -3221,7 +3243,7 @@ function renderKanban(data) {
     }
     html += '</div></div>';
   });
-  document.getElementById('kanbanBoard').innerHTML = html || '<div class="empty-state" style="padding:2.5rem">'+EMPTY_ICONS.noData+'Chưa có dữ liệu</div>';
+  document.getElementById('kanbanBoard').innerHTML = html || '<div class="empty-state" style="padding:2.5rem">'+EMPTY_ICONS.noData+_i('empty_no_data','Chưa có dữ liệu')+'</div>';
 }
 
 function renderCron(crons) {
@@ -3264,8 +3286,8 @@ function toggleSelectAll() {
 function getSelectedIds() { return Array.from(document.querySelectorAll('.stale-check:checked')).map(cb=>cb.value); }
 
 async function bulkKill(ids, label) {
-  if (!ids.length) { toast('Không có task để kill', 'warning'); return; }
-  if (!confirm(`Kill ${ids.length} task (${label})?`)) return;
+  if (!ids.length) { toast(_i('toast_no_task_kill','Không có task để kill'), 'warning'); return; }
+  if (!confirm(_i('confirm_kill_tasks','Kill')+` ${ids.length} task`)) return;
   try {
     const r = await fetch('/api/tasks/bulk-kill', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
     const d = await r.json();
@@ -3283,7 +3305,7 @@ async function openTasksModal(assignee) {
     document.getElementById('tasksModalTitle').innerHTML = `${avatar(assignee,'md')} <span class="ms-1">${assignee}</span> <span class="badge bg-secondary ms-2">${tasks.length}</span>`;
     document.getElementById('tasksModalBody').innerHTML = tasks.length
       ? tasks.map(t => `<tr><td><code class="task-id" onclick="bootstrap.Modal.getInstance(document.getElementById('tasksModal')).hide();openTaskDetail('${t.id}')">${t.id.substring(0,12)}</code></td><td>${h(t.title)}</td><td>${badge(t.status)}</td><td>${h(t.worker_pid)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.72rem" title="${(t.last_failure_error||'').replace(/"/g,'&quot;')}">${t.last_failure_error ? t.last_failure_error.substring(0,50)+(t.last_failure_error.length>50?'...':'') : '<span style="color:var(--text3)">—</span>'}</td></tr>`).join('')
-      : '<tr><td colspan="5" class="empty-state">'+EMPTY_ICONS.noTasks+'Không có task</td></tr>';
+      : '<tr><td colspan="5" class="empty-state">'+EMPTY_ICONS.noTasks+_i('empty_no_task','Không có task')+'</td></tr>';
     new bootstrap.Modal(document.getElementById('tasksModal')).show();
   } catch(e) { toast('Lỗi: '+e, 'danger'); }
 }
@@ -3347,7 +3369,7 @@ async function openTaskDetail(id) {
     // Events tab content (timeline)
     const evHtml = evs.length
       ? '<div class="timeline">'+evs.map(e => `<div class="timeline-item timeline-${h(e.kind,'unknown')}"><span class="timeline-time" title="${fmtTime(e.created_at)}">${fmtRelative(e.created_at)}</span><div class="timeline-content"><span class="badge-dot" style="background:${(S_COLOR[e.kind]||'#6b7280')}1a;color:${S_COLOR[e.kind]||'#6b7280'};border:1px solid ${(S_COLOR[e.kind]||'#6b7280')}33"><span class="status-dot" style="background:${S_COLOR[e.kind]||'#6b7280'}"></span>${h(e.kind)}</span></div></div>`).join('')+'</div>'
-      : '<div class="empty-state" style="padding:2rem">'+EMPTY_ICONS.noEvents+'Không có sự kiện</div>';
+      : '<div class="empty-state" style="padding:2rem">'+EMPTY_ICONS.noEvents+_i('empty_no_events','Không có sự kiện')+'</div>';
 
     // Runs tab content
     const runsHtml = runs.length
@@ -3355,7 +3377,7 @@ async function openTaskDetail(id) {
           const st = r.status || 'unknown';
           return `<div class="timeline-item ${st==='done'?'timeline-complete':st==='running'?'timeline-enqueue':''}"><span class="timeline-time" title="${fmtTime(r.started_at)}">${fmtRelative(r.started_at)}</span><div class="timeline-content">${badge(st)}${r.error ? '<span style="color:var(--red);font-size:.7rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:4px">'+r.error.substring(0,60)+'</span>' : ''}</div></div>`;
         }).join('')+'</div>'
-      : '<div class="empty-state" style="padding:2rem">'+EMPTY_ICONS.noData+'Không có lần chạy</div>';
+      : '<div class="empty-state" style="padding:2rem">'+EMPTY_ICONS.noData+_i('empty_no_runs','Không có lần chạy')+'</div>';
 
     // Build body
     document.getElementById('modalBody').innerHTML = `
@@ -3384,7 +3406,7 @@ async function openTaskDetail(id) {
 }
 
 function switchModalTab(name) {
-  const tabNames = {output:'Output', events:'Sự kiện', runs:'Lần chạy', notes:'Notes'};
+  const tabNames = {output:_i('modal_tab_output','Output'), events:_i('modal_tab_events','Sự kiện'), runs:_i('modal_tab_runs','Lần chạy'), notes:_i('modal_tab_notes','Notes')};
   document.querySelectorAll('.modal-tab').forEach(b => {
     const txt = b.textContent.trim().toLowerCase();
     const match = (name==='output'&&txt.includes('output')) || (name==='events'&&txt.includes('sự kiện')) || (name==='runs'&&txt.includes('lần chạy')) || (name==='notes'&&txt.includes('notes'));
@@ -3434,12 +3456,12 @@ function toggleOutputExpand() {
 async function copyOutput() {
   var data = window._taskOutputData;
   var text = data ? (data.rawOutput || '') : '';
-  if (!text) { toast('Không có nội dung để copy', 'warning'); return; }
+  if (!text) { toast(_i('toast_no_content_copy','Không có nội dung để copy'), 'warning'); return; }
   try {
     await navigator.clipboard.writeText(text);
     var btn = document.getElementById('copyBtn');
     if (btn) { btn.classList.add('copied'); setTimeout(function(){ btn.classList.remove('copied'); }, 1500); }
-    toast('Đã copy vào clipboard', 'success');
+    toast(_i('toast_copied_clipboard','Đã copy vào clipboard'), 'success');
   } catch(e) { toast('Lỗi: '+e, 'danger'); }
 }
 
@@ -3476,12 +3498,12 @@ document.querySelectorAll('[data-bs-toggle="tab"]').forEach(tab => {
   tab.addEventListener('shown.bs.tab', function(e) {
     if (e.target.id === 'tab-cron') {
       document.getElementById('cronRefreshDot').classList.add('loading');
-      document.getElementById('cronRefreshLabel').textContent = 'Đang tải...';
+      document.getElementById('cronRefreshLabel').textContent = _i('cron_loading','Đang tải...');
       loadDashboard().then(() => {
         document.getElementById('cronRefreshDot').classList.remove('loading');
-        document.getElementById('cronRefreshLabel').textContent = '30s auto';
+        document.getElementById('cronRefreshLabel').textContent = _i('cron_auto_label','30s auto');
       });
-      if (!cronTimer) cronTimer = setInterval(async () => { await loadDashboard(); document.getElementById('cronRefreshDot').classList.remove('loading'); document.getElementById('cronRefreshLabel').textContent = '30s auto'; }, 30000);
+      if (!cronTimer) cronTimer = setInterval(async () => { await loadDashboard(); document.getElementById('cronRefreshDot').classList.remove('loading'); document.getElementById('cronRefreshLabel').textContent = _i('cron_auto_label','30s auto'); }, 30000);
     } else if (e.target.id === 'tab-outputs') {
       loadOutputs();
       if (cronTimer) { clearInterval(cronTimer); cronTimer = null; }
@@ -3532,7 +3554,7 @@ function openCreateTaskModal() {
 
 async function submitCreateTask() {
   const title = document.getElementById('createTaskTitle').value.trim();
-  if (!title) { toast('Vui lòng nhập tiêu đề', 'warning'); return; }
+  if (!title) { toast(_i('toast_enter_title','Vui lòng nhập tiêu đề'), 'warning'); return; }
   const btn = document.getElementById('createTaskBtn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Đang tạo...';
   try {
@@ -3632,7 +3654,7 @@ function renderWorkers(data) {
   const table = document.getElementById('workerTable');
 
   if (!data || !data.length) {
-    grid.innerHTML = '<div class="empty-state" style="padding:2rem">'+EMPTY_ICONS.noData+'Không có worker nào</div>';
+    grid.innerHTML = '<div class="empty-state" style="padding:2rem">'+EMPTY_ICONS.noData+_i('empty_no_workers','Không có worker nào')+'</div>';
     table.innerHTML = '<tr><td colspan="6" class="empty-state">Không có dữ liệu</td></tr>';
     return;
   }
@@ -3676,7 +3698,7 @@ async function loadFiles() {
 function renderFiles(data) {
   const el = document.getElementById('fileTable');
   if (!data || !data.length) {
-    el.innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.noData+'Không có file .md nào</td></tr>';
+    el.innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.noData+_i('empty_no_files','Không có file .md nào')+'</td></tr>';
     return;
   }
   el.innerHTML = data.map((f, i) => {
@@ -3744,10 +3766,10 @@ function toggleFileView(mode) {
 
 async function copyFileContent() {
   var text = window._fileRawContent || '';
-  if (!text) { toast('Không có nội dung để copy', 'warning'); return; }
+  if (!text) { toast(_i('toast_no_content_copy','Không có nội dung để copy'), 'warning'); return; }
   try {
     await navigator.clipboard.writeText(text);
-    toast('Đã copy vào clipboard', 'success');
+    toast(_i('toast_copied_clipboard','Đã copy vào clipboard'), 'success');
   } catch(e) { toast('Lỗi: '+e, 'danger'); }
 }
 
@@ -4043,7 +4065,7 @@ async function confirmDeleteTask() {
 }
 async function deleteSelected() {
   const ids = getSelectedIds();
-  if (!ids.length) { toast('Chọn task để xoá', 'warning'); return; }
+  if (!ids.length) { toast(_i('toast_select_del','Chọn task để xoá'), 'warning'); return; }
   if (!confirm(`Xoá ${ids.length} task? Hành động này không thể hoàn tác!`)) return;
   try {
     const r = await fetch('/api/tasks/bulk-delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
@@ -4075,7 +4097,7 @@ function showSystemHealth() {
       <div><div class="analytics-mini-label">RAM</div><div class="analytics-mini-val">${d.memory.percent}%</div><div class="health-bar-wrap"><div class="health-bar-fill" style="width:${d.memory.percent}%;background:${d.memory.percent>80?'var(--red)':'var(--accent)'}"></div></div><div style="font-size:.65rem;color:var(--text3)">${fmt(d.memory.used)} / ${fmt(d.memory.total)}</div></div>
       <div><div class="analytics-mini-label">Disk</div><div class="analytics-mini-val">${d.disk.percent}%</div><div class="health-bar-wrap"><div class="health-bar-fill" style="width:${d.disk.percent}%;background:${d.disk.percent>80?'var(--red)':'var(--accent)'}"></div></div><div style="font-size:.65rem;color:var(--text3)">${fmt(d.disk.used)} / ${fmt(d.disk.total)}</div></div>
       <div><div class="analytics-mini-label">Uptime</div><div>${Math.floor(d.uptime/86400)}d ${Math.floor(d.uptime%86400/3600)}h ${Math.floor(d.uptime%3600/60)}m</div></div>
-      <div><div class="analytics-mini-label">Hermes Process</div><div><span class="badge-dot" style="background:${d.hermes.dispatcher_running?'var(--green)1a':'var(--red)1a'};color:${d.hermes.dispatcher_running?'var(--green)':'var(--red)'};border:1px solid ${d.hermes.dispatcher_running?'var(--green)33':'var(--red)33'}"><span class="status-dot" style="background:${d.hermes.dispatcher_running?'var(--green)':'var(--red)'}"></span>Dispatcher ${d.hermes.dispatcher_running?'Chạy':'Tắt'}</span></div></div>
+      <div><div class="analytics-mini-label">${_i('health_hermes_process','Hermes Process')}</div><div><span class="badge-dot" style="background:${d.hermes.dispatcher_running?'var(--green)1a':'var(--red)1a'};color:${d.hermes.dispatcher_running?'var(--green)':'var(--red)'};border:1px solid ${d.hermes.dispatcher_running?'var(--green)33':'var(--red)33'}"><span class="status-dot" style="background:${d.hermes.dispatcher_running?'var(--green)':'var(--red)'}"></span>${_i('health_hermes_disp','Dispatcher')} ${d.hermes.dispatcher_running?_i('health_hermes_disp_run','Chạy'):_i('health_hermes_disp_off','Tắt')}</span></div></div>
     </div>`;
   new bootstrap.Modal(document.getElementById('systemHealthModal')).show();
 }
