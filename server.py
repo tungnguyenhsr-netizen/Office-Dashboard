@@ -2977,8 +2977,72 @@ function applyLangToStatic() {
     const vis = window._analyticsVisible !== false;
     at.innerHTML = `<i class="bi ${vis?'bi-chevron-up':'bi-chevron-down'}"></i> ${vis ? _i('analytics_collapse','Thu gọn analytics') : _i('analytics_expand','Mở analytics')}`;
   }
+  // Update all TH elements with known text via data map
+  const textMap = [
+    // Section headers / card headers
+    ['Hoạt động gần đây', 'sec_title_recent'], ['Phân bố', 'sec_title_dist'],
+    ['Kanban theo trạng thái', 'sec_title_kanban'], ['Lịch trình Cron', 'sec_title_cron'],
+    ['Kết quả tác vụ', 'sec_title_outputs'], ['Worker Agents', 'sec_title_workers'],
+    ['File Viewer', 'sec_title_files'], ['Hội thoại Agent', 'sec_title_conv'],
+    // Stale table headers
+    ['ID', 'stale_header_id'], ['Tiêu đề', 'stale_header_title'],
+    ['Người phụ trách', 'stale_header_assignee'], ['PID', 'stale_header_pid'],
+    ['Age', 'stale_header_age'], ['Lý do', 'stale_header_reason'],
+    // All-task table headers
+    ['Tạo lúc', 'all_header_created'], ['Trạng thái', 'all_header_status'],
+    ['Bắt đầu', 'all_header_started'],
+    // Done table
+    ['Xong lúc', 'done_header_done'],
+    // Cron table
+    ['Tên', 'cron_header_name'], ['Lịch', 'cron_header_schedule'],
+    ['Lần chạy tới', 'cron_header_next'], ['Lần cuối', 'cron_header_last'],
+    ['Lỗi', 'cron_header_error'], ['On/Off', 'cron_header_toggle'],
+    // Output table
+    ['Thời gian', 'output_header_time'],
+    // Worker table
+    ['Profile', 'conv_profile'], ['Status', 'worker_status_text'],
+    ['Tổng task', 'worker_total'], ['Hoạt động gần nhất', 'worker_active'],
+    // File table
+    ['STT', 'file_header_stt'], ['Tên file', 'file_header_name'],
+    ['Đường dẫn', 'file_header_path'], ['Kích thước', 'file_header_size'],
+    ['Sửa đổi', 'file_header_mod'],
+    // Conversation table
+    ['Model', 'conv_model'], ['Messages', 'conv_msgs'],
+    ['Tokens', 'conv_tokens'], ['Cost', 'conv_cost'],
+    ['Thời gian', 'conv_time'],
+    // Filter dropdown
+    ['Tất cả trạng thái', 'all_status'],
+    // Task modal table
+    ['Task', 'sec_title_stale'],
+  ];
+  document.querySelectorAll('th, .sec-title, .card-header, option, .filter-chip').forEach(el => {
+    const txt = el.textContent.trim();
+    textMap.forEach(([vi, key]) => {
+      if (txt === vi) {
+        if (el.tagName === 'OPTION' || el.classList.contains('filter-chip')) {
+          el.textContent = _i(key, vi);
+        } else {
+          el.childNodes.forEach(n => {
+            if (n.nodeType === 3 && n.textContent.trim() === vi) n.textContent = _i(key, vi);
+          });
+        }
+      }
+    });
+  });
   // Update lang toggle
   updateLangToggleUI();
+  // Update kill/delete button text
+  ['killSelectedBtn', 'deleteSelectedBtn'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) {
+      const key = id === 'killSelectedBtn' ? 'filter_kill_sel' : 'filter_del_sel';
+      const countSpan = btn.querySelector('span');
+      const count = countSpan ? countSpan.textContent : '0';
+      const icon = btn.querySelector('i');
+      btn.innerHTML = (icon ? icon.outerHTML : '') + _i(key, id==='killSelectedBtn'?'Kill':'Xoá')+' đã chọn';
+      if (countSpan) btn.appendChild(countSpan);
+    }
+  });
 }
 
 const S_COLOR = {ready:'#4ade80',running:'#fbbf24',stale:'#f87171',blocked:'#6b7280',done:'#6b7280',error:'#f87171',ok:'#4ade80',completed:'#38bdf8',gave_up:'#a78bfa',spawn_failed:'#f87171',killed:'#6b7280'};
