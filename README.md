@@ -60,23 +60,42 @@ plans/             → Architecture documentation
 
 ## Vault Setup (Optional)
 
-Dashboard includes a File Viewer tab and file search. If you use an Obsidian vault with Hermes, configure:
+Dashboard includes a File Viewer tab, file search, and scripts that read/write
+to your Obsidian vault. The repo expects a 3-level directory structure:
+
+```
+YourVault/                  ← HERMES_VAULT_ROOT (.env or auto-detected)
+  Efforts/                  ← task outputs, .md files
+    Office-Dashboard/       ← this repo (HERMES_ROOT)
+  Insights/                 ← insight reports
+  Atlas/                    ← vault index, Me.md
+```
+
+### Quick Setup
+
+**Option A — Environment variable**
 
 ```powershell
 $env:HERMES_VAULT_DIR = "C:\Users\You\Documents\YourVault"
 ```
 
-Expected structure:
+**Option B — Settings UI**
 
-```
-{VAULT_DIR}/
-  Efforts/          # .md files directory
-    project-1.md
-    project-2.md
+Open dashboard → Files tab → ⚙️ gear button → enter vault path → Save.
+Path is saved to `vault-config.json` (gitignored).
+
+**Option C — Scripts (orchestrator, strategist)**
+
+The scripts use `scripts/config.py` which auto-detects `HERMES_ROOT` from
+its own file location. If your directory structure differs, set:
+
+```powershell
+$env:HERMES_ROOT = "C:\path\to\Office-Dashboard"
 ```
 
-**Without vault**: File tab shows empty. Dashboard works fine. Task output comes from kanban.db.
-**Default** (no env var set): Vault features disabled, no crash.
+**Without vault**: File tab shows empty, file search returns nothing.
+Dashboard + scripts still work — task output comes from `kanban.db`.
+Default (no config): vault features disabled gracefully, no crash.
 
 ## Features
 
@@ -172,9 +191,12 @@ Expected structure:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DASHBOARD_PORT` | `8093` | Server port |
-| `FLASK_USER` | *(empty)* | Basic auth username (optional) |
-| `FLASK_PASS` | *(empty)* | Basic auth password (optional) |
-| `HERMES_VAULT_DIR` | *(empty)* | Obsidian vault path for File Viewer |
+| `FLASK_USER` | `admin` | Auth username |
+| `FLASK_PASS` | `admin` | Auth password |
+| `HERMES_VAULT_DIR` | *(auto-detect)* | Vault path for File Viewer |
+| `HERMES_ROOT` | *(auto-detect)* | Project root (for orchestrator scripts) |
+| `HERMES_DB_PATH` | `%LOCALAPPDATA%\hermes\kanban.db` | SQLite database path |
+| `HERMES_MONITOR_URL` | `http://localhost:8093` | Monitor URL for orchestrator |
 | `%LOCALAPPDATA%\hermes\kanban.db` | — | SQLite database path |
 | `%LOCALAPPDATA%\hermes\cron\jobs.json` | — | Cron jobs config path |
 
