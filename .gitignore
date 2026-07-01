@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.log
+logs/
+health-reports/
+audit-*.md
