@@ -2809,6 +2809,14 @@ const LANG = {
     task_workspace:'Workspace', task_status:'Status', task_assignee:'Assignee',
     filter_label_all:'Tất cả', filter_label_title:'Tiêu đề',
     all_table_empty:'Không có task nào', done_table_empty:'Chưa có task xong',
+    status_archived:'Lưu trữ', kanban_empty:'Trống',
+    cron_on:'ON', cron_off:'OFF', cron_auto_label:'30s auto', cron_loading:'Đang tải...',
+    conv_no_title:'(no title)', conv_session:'Hội thoại', conv_agent:'Agent', conv_user:'User', conv_reasoning:'Reasoning',
+    conv_tool_call:'tool_call', conv_no_msgs:'Không có tin nhắn',
+    out_loading:'Đang tải...',
+    system_health_title:'System Health', system_health_cores:'cores', system_health_disp:'Dispatcher',
+    system_health_disp_run:'Chạy', system_health_disp_off:'Tắt',
+    form_title_required:'Vui lòng nhập tiêu đề',
   },
   en: {
     tab_system:'System', tab_kanban:'Kanban', tab_cron:'Cron', tab_outputs:'Outputs',
@@ -2873,6 +2881,14 @@ const LANG = {
     task_workspace:'Workspace', task_status:'Status', task_assignee:'Assignee',
     filter_label_all:'All', filter_label_title:'Title',
     all_table_empty:'No tasks', done_table_empty:'No completed tasks',
+    status_archived:'Archived', kanban_empty:'Empty',
+    cron_on:'ON', cron_off:'OFF', cron_auto_label:'30s auto', cron_loading:'Loading...',
+    conv_no_title:'(no title)', conv_session:'Conversation', conv_agent:'Agent', conv_user:'User', conv_reasoning:'Reasoning',
+    conv_tool_call:'tool call', conv_no_msgs:'No messages',
+    out_loading:'Loading...',
+    system_health_title:'System Health', system_health_cores:'cores', system_health_disp:'Dispatcher',
+    system_health_disp_run:'Running', system_health_disp_off:'Stopped',
+    form_title_required:'Please enter a title',
   }
 };
 let currentLang = localStorage.getItem('lang') || 'vi';
@@ -3139,7 +3155,7 @@ async function loadDashboard() {
     var legendEl = document.getElementById('pieLegend');
     if (pieEl && legendEl) {
       var pieColors = {ready:'#4ade80',blocked:'#6b7280',running:'#fbbf24',stale:'#f87171',done:'#38bdf8',archived:'#5858aa'};
-      var pieLabels = {ready:'Sẵn sàng',blocked:'Chặn',running:'Đang chạy',stale:'Treo',done:'Hoàn tất',archived:'Lưu trữ'};
+      var pieLabels = {ready:_i('status_ready','Sẵn sàng'),blocked:_i('status_blocked','Chặn'),running:_i('status_running','Đang chạy'),stale:_i('status_stale','Treo'),done:_i('status_done','Xong'),archived:_i('status_archived','Lưu trữ')};
       var pieOrder = ['ready','blocked','running','stale','done','archived'];
       var totals = {};
       board.forEach(function(x){ totals[x.status] = (totals[x.status]||0) + x.cnt; });
@@ -3177,7 +3193,7 @@ async function loadDashboard() {
 
 function renderKanban(data) {
   var statusOrder = ['ready','blocked','running','stale','done','archived'];
-  var statusLabels = {ready:'Sẵn sàng',blocked:'Chặn',running:'Đang chạy',stale:'Treo',done:'Hoàn tất',archived:'Lưu trữ'};
+  var statusLabels = {ready:_i('status_ready','Sẵn sàng'),blocked:_i('status_blocked','Chặn'),running:_i('status_running','Đang chạy'),stale:_i('status_stale','Treo'),done:_i('status_done','Xong'),archived:_i('status_archived','Lưu trữ')};
   var statusColors = {ready:'#4ade80',blocked:'#6b7280',running:'#fbbf24',stale:'#f87171',done:'#38bdf8',archived:'#5858aa'};
 
   var search = (document.getElementById('searchInput').value||'').toLowerCase();
@@ -3201,7 +3217,7 @@ function renderKanban(data) {
         html += '<div class="kanban-item" style="border-left:3px solid '+statusColors[s]+'60" onclick="openTasksModal(\''+e[0]+'\')">'+avatar(name,'sm')+'<span class="kanban-item-text">'+e[0]+'</span><span class="kanban-item-count" style="color:'+statusColors[s]+'">'+e[1]+'</span></div>';
       });
     } else {
-      html += '<div class="empty-state" style="padding:.8rem 0;font-size:.68rem;color:var(--text3)">Trống</div>';
+      html += '<div class="empty-state" style="padding:.8rem 0;font-size:.68rem;color:var(--text3)">'+_i('kanban_empty','Trống')+'</div>';
     }
     html += '</div></div>';
   });
@@ -3210,13 +3226,14 @@ function renderKanban(data) {
 
 function renderCron(crons) {
   document.getElementById('cronTable').innerHTML = crons.length
-    ? crons.map(c => {
+      ? crons.map(c => {
         const st = c.last_status || 'unknown';
         const err = c.last_error || c.last_delivery_error || '';
         const enabled = c.enabled !== false;
-        return `<tr><td><strong>${h(c.name)}</strong></td><td><code style="color:var(--text3);font-size:.72rem">${h(c.schedule_display)}</code></td><td style="color:var(--text2);font-size:.72rem" title="${fmtTime(c.next_run_at)}">${fmtRelative(c.next_run_at)}</td><td style="color:var(--text2);font-size:.72rem" title="${fmtTime(c.last_run_at)}">${fmtRelative(c.last_run_at)}</td><td>${badge(st)}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.72rem" title="${err.replace(/"/g,'&quot;')}">${err ? err.substring(0,60)+(err.length>60?'...':'') : '<span style="color:var(--text3)">—</span>'}</td><td class="text-center"><span class="cron-toggle" style="cursor:pointer" onclick="toggleCron('${c.name}')"><span class="cron-status-led ${enabled?'enabled':'disabled'}"></span><span style="font-size:.62rem;color:${enabled?'var(--green)':'var(--text3)'}">${enabled?'ON':'OFF'}</span></span></td></tr>`;
+        const onOff = enabled ? _i('cron_on','ON') : _i('cron_off','OFF');
+        return `<tr><td><strong>${h(c.name)}</strong></td><td><code style="color:var(--text3);font-size:.72rem">${h(c.schedule_display)}</code></td><td style="color:var(--text2);font-size:.72rem" title="${fmtTime(c.next_run_at)}">${fmtRelative(c.next_run_at)}</td><td style="color:var(--text2);font-size:.72rem" title="${fmtTime(c.last_run_at)}">${fmtRelative(c.last_run_at)}</td><td>${badge(st)}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.72rem" title="${err.replace(/"/g,'"')}">${err ? err.substring(0,60)+(err.length>60?'...':'') : '<span style="color:var(--text3)">—</span>'}</td><td class="text-center"><span class="cron-toggle" style="cursor:pointer" onclick="toggleCron('${c.name}')"><span class="cron-status-led ${enabled?'enabled':'disabled'}"></span><span style="font-size:.62rem;color:${enabled?'var(--green)':'var(--text3)'}">${onOff}</span></span></td></tr>`;
       }).join('')
-    : '<tr><td colspan="7" class="empty-state">'+EMPTY_ICONS.noCron+'Không có dữ liệu cron</td></tr>';
+    : '<tr><td colspan="7" class="empty-state">'+EMPTY_ICONS.noCron+_i('empty_no_cron','Không có dữ liệu cron')+'</td></tr>';
 }
 
 async function loadOutputs() {
@@ -3230,8 +3247,8 @@ async function loadOutputs() {
           const ts = t.completed_at || t.started_at;
           return `<tr><td><span class="row-idx">${i+1}</span></td><td><a href="#" onclick="openTaskDetail('${t.id}');return false" class="task-link">${h(t.title||t.id)}</a></td><td>${assigneeCell(t.assignee)}</td><td>${badge(t.status)}</td><td style="color:var(--text3);font-size:.7rem;white-space:nowrap" title="${fmtTime(ts)}">${fmtRelative(ts)}</td></tr>`;
         }).join('')
-      : '<tr><td colspan="5" class="empty-state">'+EMPTY_ICONS.noOutput+'Chưa có output</td></tr>';
-  } catch(e) { document.getElementById('outputTable').innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.error+'Lỗi: '+e.message+'</td></tr>'; }
+      : '<tr><td colspan="5" class="empty-state">'+EMPTY_ICONS.noOutput+_i('empty_no_output','Chưa có output')+'</td></tr>';
+  } catch(e) { document.getElementById('outputTable').innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.error+_i('empty_error','Lỗi')+': '+e.message+'</td></tr>'; }
 }
 
 function updateSelected() {
@@ -3627,10 +3644,10 @@ function renderWorkers(data) {
         <span class="wc-name">${avatar(w.profile,'md')} ${h(w.profile)}</span>
       </div>
       <div class="wc-row"><span>PID</span><strong>${h(w.pid,'—')}</strong></div>
-      <div class="wc-row"><span>Trạng thái</span><strong style="color:${w.status==='running'?'var(--green)':'var(--text3)'}">${w.status==='running'?'Đang chạy':'Ngoại tuyến'}</strong></div>
-      <div class="wc-row"><span>Task hiện tại</span><strong>${w.current_task ? w.current_task.title.substring(0,28)+(w.current_task.title.length>28?'...':'') : '—'}</strong></div>
-      <div class="wc-row"><span>Tổng task</span><strong>${w.task_count}</strong></div>
-      <div class="wc-row"><span>Hoạt động</span><strong style="font-size:.65rem">${fmtRelative(w.last_heartbeat||w.started_at)}</strong></div>
+      <div class="wc-row"><span>${_i('worker_status_run','Trạng thái')}</span><strong style="color:${w.status==='running'?'var(--green)':'var(--text3)'}">${w.status==='running'?_i('worker_status_run','Đang chạy'):_i('worker_status_off','Ngoại tuyến')}</strong></div>
+      <div class="wc-row"><span>${_i('worker_task','Task hiện tại')}</span><strong>${w.current_task ? w.current_task.title.substring(0,28)+(w.current_task.title.length>28?'...':'') : '—'}</strong></div>
+      <div class="wc-row"><span>${_i('worker_total','Tổng task')}</span><strong>${w.task_count}</strong></div>
+      <div class="wc-row"><span>${_i('worker_active','Hoạt động')}</span><strong style="font-size:.65rem">${fmtRelative(w.last_heartbeat||w.started_at)}</strong></div>
     </div>
   `).join('');
 
@@ -3975,7 +3992,7 @@ async function openConversation(profile, sessionId) {
     const r = await fetch(`/api/conversation/${encodeURIComponent(profile)}/${encodeURIComponent(sessionId)}`);
     const d = await r.json();
     if (!d.ok) { toast(d.message, 'danger'); return; }
-    document.getElementById('convModalTitle').innerHTML = `<i class="bi bi-chat-dots me-1"></i>${h(d.session.title||'Hội thoại')} ${avatar(profile,'sm')} ${h(profile)}`;
+    document.getElementById('convModalTitle').innerHTML = `<i class="bi bi-chat-dots me-1"></i>${h(d.session.title||_i('conv_session','Hội thoại'))} ${avatar(profile,'sm')} ${h(profile)}`;
     const messages = d.messages || [];
     document.getElementById('convModalBody').innerHTML = messages.length
       ? '<div class="conv-chat">'+messages.map(m => {
@@ -3987,13 +4004,13 @@ async function openConversation(profile, sessionId) {
           const bg = isUser ? 'var(--accent-subtle)' : (isTool ? 'var(--surface2)' : 'var(--surface)');
           const border = isUser ? 'var(--accent)' : 'var(--border)';
           return `<div class="conv-msg conv-${side}" style="background:${bg};border:1px solid ${border};border-radius:var(--radius-sm);padding:.5rem .65rem;margin-bottom:.5rem;max-width:${isTool?'100%':'80%'};margin-${side}:0">
-            <div style="font-size:.62rem;color:var(--text3);margin-bottom:2px">${isUser?'User':'Agent'} · ${fmtTime(m.timestamp)}</div>
+            <div style="font-size:.62rem;color:var(--text3);margin-bottom:2px">${isUser?_i('conv_user','User'):_i('conv_agent','Agent')} · ${fmtTime(m.timestamp)}</div>
             <div class="output-block" style="max-height:300px;font-size:.76rem;background:transparent;border:none;padding:0;margin:0">${renderMd(content)}</div>
-            ${hasReasoning ? `<details style="margin-top:4px;font-size:.68rem"><summary style="color:var(--text3);cursor:pointer">Reasoning</summary><pre style="margin:4px 0;padding:.4rem;font-size:.68rem;max-height:150px;overflow-y:auto;background:var(--bg2)">${h(m.reasoning)}</pre></details>` : ''}
-            ${m.tool_calls ? `<div style="font-size:.65rem;color:var(--accent);margin-top:2px"><i class="bi bi-wrench"></i> ${h(m.tool_name||'tool_call')}</div>` : ''}
+            ${hasReasoning ? `<details style="margin-top:4px;font-size:.68rem"><summary style="color:var(--text3);cursor:pointer">${_i('conv_reasoning','Reasoning')}</summary><pre style="margin:4px 0;padding:.4rem;font-size:.68rem;max-height:150px;overflow-y:auto;background:var(--bg2)">${h(m.reasoning)}</pre></details>` : ''}
+            ${m.tool_calls ? `<div style="font-size:.65rem;color:var(--accent);margin-top:2px"><i class="bi bi-wrench"></i> ${h(m.tool_name||_i('conv_tool_call','tool_call'))}</div>` : ''}
           </div>`;
         }).join('')+'</div>'
-      : '<div class="empty-state">Không có tin nhắn</div>';
+      : '<div class="empty-state">'+_i('conv_no_msgs','Không có tin nhắn')+'</div>';
     new bootstrap.Modal(document.getElementById('conversationModal')).show();
   } catch(e) { toast('Lỗi: '+e, 'danger'); }
 }
