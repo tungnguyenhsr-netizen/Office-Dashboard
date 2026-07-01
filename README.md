@@ -1,12 +1,16 @@
 # Office-Dashboard
 
-Web monitoring dashboard for [Hermes Agent](https://hermes.dev) — view tasks, workers, cron jobs, agent conversations, files, and system health in real-time.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Web monitoring dashboard for Hermes Agent — a self-hosted AI agent orchestration system. View tasks, workers, cron jobs, agent conversations, files, and system health in real-time.
+
+> **Schema note**: This dashboard uses Hermes' SQLite kanban.db schema and is not a generic task manager. The schema is fixed Hermes format (v1.1). If you want to adapt it for other task queues, feel free to fork — the core UI (tables, modals, kanban) is framework-agnostic.
 
 ## Prerequisites
 
 - **Python 3.11+** (with `pip`)
 - **Hermes Agent** installed and running (provides `kanban.db`, `cron/jobs.json`, `profiles/*/state.db`)
-- **Windows** (dashboard uses `taskkill` for PID kill, `psutil` for system health)
+- **Cross-platform**: works on Windows, macOS, and Linux
 - **Flask** (`pip install flask`)
 - **psutil** (optional, for system health metrics — `pip install psutil`)
 
@@ -52,7 +56,27 @@ plans/             → Architecture documentation
 | `kanban.db` | `%LOCALAPPDATA%\hermes\kanban.db` | Tasks, task_runs, task_events |
 | `cron/jobs.json` | `%LOCALAPPDATA%\hermes\cron\jobs.json` | Cron job schedules |
 | `profiles/*/state.db` | `%LOCALAPPDATA%\hermes\profiles\{name}\state.db` | Agent conversations |
-| `VAULT_ROOT` | `C:\Users\{user}\OneDrive\Documents\YOURNAME` | Obsidian vault markdown files |
+| `VAULT_ROOT` | `$env:HERMES_VAULT_DIR` (optional) | Obsidian vault markdown files |
+
+## Vault Setup (Optional)
+
+Dashboard includes a File Viewer tab and file search. If you use an Obsidian vault with Hermes, configure:
+
+```powershell
+$env:HERMES_VAULT_DIR = "C:\Users\You\Documents\YourVault"
+```
+
+Expected structure:
+
+```
+{VAULT_DIR}/
+  Efforts/          # .md files directory
+    project-1.md
+    project-2.md
+```
+
+**Without vault**: File tab shows empty. Dashboard works fine. Task output comes from kanban.db.
+**Default** (no env var set): Vault features disabled, no crash.
 
 ## Features
 
@@ -148,16 +172,20 @@ plans/             → Architecture documentation
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DASHBOARD_PORT` | `8093` | Server port |
+| `FLASK_USER` | *(empty)* | Basic auth username (optional) |
+| `FLASK_PASS` | *(empty)* | Basic auth password (optional) |
+| `HERMES_VAULT_DIR` | *(empty)* | Obsidian vault path for File Viewer |
 | `%LOCALAPPDATA%\hermes\kanban.db` | — | SQLite database path |
 | `%LOCALAPPDATA%\hermes\cron\jobs.json` | — | Cron jobs config path |
 
 ## Security
 
+- **Basic auth**: Set `FLASK_USER` + `FLASK_PASS` env vars to require login. Without them, dashboard runs without auth (localhost only recommended).
 - Dashboard connects to local DB only (no network DB)
 - DB is opened with `PRAGMA query_only = ON` for read operations
 - Write operations (create, update, delete) use explicit `readonly=False`
 - Delete task requires user to type `CONFIRM` in UI
-- Bulk kill requires user confirmation
+- Bulk kill/delete requires user confirmation
 - `.gitignore` excludes `.env`, `*.db`, `state/`, logs
 
 ## Development
@@ -177,6 +205,6 @@ No build tools, no npm, no webpack. Edit `server.py` → refresh browser.
 
 ## Related
 
-- [Hermes Agent](https://hermes.dev) — The AI agent system this dashboard monitors
+- **Hermes Agent** — Self-hosted AI agent orchestration system this dashboard monitors
 - [Bootstrap 5.3](https://getbootstrap.com/) — UI framework (loaded from CDN)
 - [Bootstrap Icons](https://icons.getbootstrap.com/) — Icon library (loaded from CDN)

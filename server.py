@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import io, json, os, sqlite3, subprocess, sys, time, uuid
+import io, json, os, signal, sqlite3, subprocess, sys, time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from flask import Flask, jsonify, render_template_string, request
@@ -7,6 +7,16 @@ from flask import Flask, jsonify, render_template_string, request
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 app = Flask(__name__)
+
+FLASK_USER = os.environ.get('FLASK_USER', '')
+FLASK_PASS = os.environ.get('FLASK_PASS', '')
+
+if FLASK_USER and FLASK_PASS:
+    @app.before_request
+    def check_auth():
+        auth = request.authorization
+        if not auth or auth.username != FLASK_USER or auth.password != FLASK_PASS:
+            return ('Unauthorized', 401, {'WWW-Authenticate': 'Basic realm="Dashboard"'})
 
 DB = os.path.expandvars(r'%LOCALAPPDATA%\hermes\kanban.db')
 CRON_JSON = os.path.expandvars(r'%LOCALAPPDATA%\hermes\cron\jobs.json')
@@ -142,7 +152,7 @@ def fetch_task_detail(task_id):
     }
 
 HERMES_HOME = os.path.expandvars(r'%LOCALAPPDATA%\hermes')
-VAULT_ROOT = r'C:\Users\YOURNAME\Documents\YourVault'
+VAULT_ROOT = os.environ.get('HERMES_VAULT_DIR', '')
 
 def fetch_task_output(task_id):
     conn = db_conn()
@@ -297,12 +307,18 @@ def _kill_by_pid(pid):
     if not pid or pid == 0:
         return False, 'không có PID'
     try:
-        r = subprocess.run(['taskkill', '/F', '/PID', str(pid)], capture_output=True, text=True, timeout=10)
-        if r.returncode == 0:
+        if sys.platform == 'win32':
+            r = subprocess.run(['taskkill', '/F', '/PID', str(pid)], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                return True, 'đã kill'
+            return False, r.stderr.strip() or r.stdout.strip() or 'taskkill thất bại'
+        else:
+            os.kill(pid, signal.SIGTERM)
             return True, 'đã kill'
-        return False, r.stderr.strip() or r.stdout.strip() or 'taskkill thất bại'
     except subprocess.TimeoutExpired:
         return False, 'timeout'
+    except ProcessLookupError:
+        return False, 'process đã chết trước đó'
     except Exception as e:
         return False, str(e)
 
