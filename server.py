@@ -2597,7 +2597,7 @@ a.task-link:hover {
           <div class="d-flex gap-2">
             <button class="btn btn-sm btn-outline-warning d-none" id="killSelectedBtn" onclick="killSelected()"><i class="bi bi-x-lg me-1"></i>Kill đã chọn (<span id="selectedCount">0</span>)</button>
             <button class="btn btn-sm btn-outline-danger d-none" id="deleteSelectedBtn" onclick="deleteSelected()"><i class="bi bi-trash3 me-1"></i>Xoá đã chọn (<span id="deleteSelectedCount">0</span>)</button>
-            <button class="btn btn-sm btn-outline-danger" onclick="killAllDead()"><i class="bi bi-trash3 me-1"></i>Kill all</button>
+            <button class="btn btn-sm btn-outline-danger" onclick="killAllDead()"><i class="bi bi-trash3 me-1"></i>${_i('filter_kill_all','Kill all')}</button>
           </div>
         </div>
         <div>
@@ -2711,7 +2711,7 @@ a.task-link:hover {
     </div>
   </div>
   <div class="modal-footer" style="border-color:var(--border-light);padding:.75rem 1.25rem">
-    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Huỷ</button>
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">${_i('btn_cancel','Huỷ')}</button>
     <button class="btn btn-sm btn-primary" id="createTaskBtn" onclick="submitCreateTask()"><i class="bi bi-check-lg me-1"></i>Tạo task</button>
   </div>
 </div></div></div>
@@ -2724,7 +2724,7 @@ a.task-link:hover {
     <input type="text" class="form-control" id="deleteConfirmInput" placeholder="Gõ CONFIRM..." style="background:var(--bg2);border-color:var(--border);color:var(--text);font-size:.9rem;text-align:center;letter-spacing:3px;text-transform:uppercase" oninput="document.getElementById('deleteTaskBtn').disabled=this.value!=='CONFIRM'">
   </div>
   <div class="modal-footer" style="border-color:var(--border-light)">
-    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Huỷ</button>
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">${_i('btn_cancel','Huỷ')}</button>
     <button class="btn btn-sm btn-outline-danger" id="deleteTaskBtn" disabled onclick="confirmDeleteTask()"><i class="bi bi-trash3 me-1"></i> Xoá vĩnh viễn</button>
   </div>
 </div></div></div>
@@ -2828,6 +2828,7 @@ const LANG = {
     health_hermes_disp_run:'Chạy', health_hermes_disp_off:'Tắt',
     worker_status_text:'Trạng thái', worker_status_run:'Đang chạy', worker_status_off:'Ngoại tuyến',
     kanban_load_error:'Lỗi:', kanban_no_data:'Chưa có dữ liệu',
+    time_second:'giây trước', time_minute:'phút trước', time_hour:'giờ trước', time_day:'ngày trước', time_week:'tuần trước',
   },
   en: {
     tab_system:'System', tab_kanban:'Kanban', tab_cron:'Cron', tab_outputs:'Outputs',
@@ -2911,6 +2912,7 @@ const LANG = {
     health_hermes_disp_run:'Running', health_hermes_disp_off:'Stopped',
     worker_status_text:'Status', worker_status_run:'Running', worker_status_off:'Offline',
     kanban_load_error:'Error:', kanban_no_data:'No data',
+    time_second:'seconds ago', time_minute:'minutes ago', time_hour:'hours ago', time_day:'days ago', time_week:'weeks ago',
   }
 };
 let currentLang = localStorage.getItem('lang') || 'vi';
@@ -2930,6 +2932,7 @@ const S_LABEL = {
   Object.assign(LANG.vi, viLabels);
   Object.assign(LANG.en, enLabels);
 })();
+updateS_LABEL(); // Re-init S_LABEL with correct lang after status keys added to LANG
 function updateS_LABEL() {
   const keys = ['ready','running','stale','blocked','done','error','ok','completed','gave_up','spawn_failed','killed'];
   const viVals = ['Sẵn sàng','Đang chạy','Treo','Chặn','Xong','Lỗi','OK','Hoàn tất','Bỏ','Lỗi KT','Đã kill'];
@@ -3016,7 +3019,9 @@ function applyLangToStatic() {
     ['Task', 'sec_title_stale'],
   ];
   document.querySelectorAll('th, .sec-title, .card-header, option, .filter-chip').forEach(el => {
-    const txt = el.textContent.trim();
+    let txt = el.textContent.trim();
+    // Strip trailing numbers from badge spans
+    txt = txt.replace(/\d+$/, '').trim();
     textMap.forEach(([vi, key]) => {
       if (txt === vi) {
         if (el.tagName === 'OPTION' || el.classList.contains('filter-chip')) {
@@ -3043,6 +3048,9 @@ function applyLangToStatic() {
       if (countSpan) btn.appendChild(countSpan);
     }
   });
+  // Update search placeholder
+  const si = document.getElementById('searchInput');
+  if (si) si.placeholder = _i('search_placeholder','Tìm toàn bộ...');
 }
 
 const S_COLOR = {ready:'#4ade80',running:'#fbbf24',stale:'#f87171',blocked:'#6b7280',done:'#6b7280',error:'#f87171',ok:'#4ade80',completed:'#38bdf8',gave_up:'#a78bfa',spawn_failed:'#f87171',killed:'#6b7280'};
@@ -3077,7 +3085,7 @@ function badge(status) {
 
 function fmtTime(ts) {
   if (!ts) return '—';
-  try { const ms = typeof ts === 'number' && ts < 1e12 ? ts * 1000 : ts; const d = new Date(ms); return isNaN(d.getTime()) ? ts : d.toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}); }
+  try { const ms = typeof ts === 'number' && ts < 1e12 ? ts * 1000 : ts; const d = new Date(ms); return isNaN(d.getTime()) ? ts : d.toLocaleString(currentLang==='en'?'en-US':'vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}); }
   catch(e) { return ts; }
 }
 
@@ -3088,13 +3096,13 @@ function fmtRelative(ts) {
     const diff = Date.now() - ms;
     if (isNaN(diff)) return fmtTime(ts);
     const sec = Math.floor(diff/1000);
-    if (sec < 60) return sec + ' giây trước';
+    if (sec < 60) return sec + ' ' + _i('time_second','giây trước');
     const min = Math.floor(sec/60);
-    if (min < 60) return min + ' phút trước';
+    if (min < 60) return min + ' ' + _i('time_minute','phút trước');
     const hr = Math.floor(min/60);
-    if (hr < 24) return hr + ' giờ trước';
+    if (hr < 24) return hr + ' ' + _i('time_hour','giờ trước');
     const day = Math.floor(hr/24);
-    if (day < 7) return day + ' ngày trước';
+    if (day < 7) return day + ' ' + _i('time_day','ngày trước');
     return fmtTime(ts);
   } catch(e) { return fmtTime(ts); }
 }
@@ -3272,7 +3280,7 @@ async function loadDashboard() {
     renderCron(crons);
     document.getElementById('cronBadge').textContent = crons.length;
     document.getElementById('cronCountBadge').textContent = crons.length;
-    document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('vi-VN');
+    document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString(currentLang==='en'?'en-US':'vi-VN');
     loadOutputs();
   } catch(e) { console.error(e); toast('Lỗi tải dữ liệu', 'danger'); }
 }
@@ -3327,7 +3335,7 @@ async function loadOutputs() {
     const r = await fetch('/api/task-outputs');
     const d = await r.json();
     document.getElementById('outputCountBadge').textContent = d.length;
-    document.getElementById('outputRefreshLabel').textContent = new Date().toLocaleTimeString('vi-VN');
+    document.getElementById('outputRefreshLabel').textContent = new Date().toLocaleTimeString(currentLang==='en'?'en-US':'vi-VN');
     document.getElementById('outputTable').innerHTML = d.length
       ? d.map((t, i) => {
           const ts = t.completed_at || t.started_at;
@@ -3418,13 +3426,13 @@ async function openTaskDetail(id) {
     // Output tab content
     const outputHtml = rawOutput
       ? `<div class="output-toolbar">
-        <span class="toolbar-btn active" id="outViewRendered" onclick="toggleOutputView('rendered');return false"><i class="bi bi-eye"></i> Hiển thị</span>
-        <span class="toolbar-btn" id="outViewRaw" onclick="toggleOutputView('raw');return false"><i class="bi bi-braces"></i> Raw</span>
+        <span class="toolbar-btn active" id="outViewRendered" onclick="toggleOutputView('rendered');return false"><i class="bi bi-eye"></i> ${_i('toolbar_rendered','Hiển thị')}</span>
+        <span class="toolbar-btn" id="outViewRaw" onclick="toggleOutputView('raw');return false"><i class="bi bi-braces"></i> ${_i('toolbar_raw','Raw')}</span>
         <span class="toolbar-sep"></span>
-        <span class="toolbar-btn" id="copyBtn" onclick="copyOutput()" title="Ctrl+C"><i class="bi bi-clipboard"></i> Copy</span>
-        <span class="toolbar-btn" onclick="editTaskOutput(window._taskOutputData?.rawOutput)" title="Sửa output" style="margin-left:2px"><i class="bi bi-pencil"></i> Sửa</span>
+        <span class="toolbar-btn" id="copyBtn" onclick="copyOutput()" title="Ctrl+C"><i class="bi bi-clipboard"></i> ${_i('toolbar_copy','Copy')}</span>
+        <span class="toolbar-btn" onclick="editTaskOutput(window._taskOutputData?.rawOutput)" title="${_i('toolbar_edit','Sửa output')}" style="margin-left:2px"><i class="bi bi-pencil"></i> ${_i('toolbar_edit','Sửa')}</span>
         <span class="toolbar-sep"></span>
-        <span class="toolbar-btn" id="expandBtn" onclick="toggleOutputExpand()" title="Toàn màn hình"><i class="bi bi-arrows-fullscreen" id="expandIcon"></i></span>
+        <span class="toolbar-btn" id="expandBtn" onclick="toggleOutputExpand()" title="${_i('toolbar_fullscreen','Toàn màn hình')}"><i class="bi bi-arrows-fullscreen" id="expandIcon"></i></span>
       </div>
       <div class="output-block" id="outputBlockContent">${renderMd(rawOutput)}</div>
       <pre class="output-raw" id="outputRawContent" style="display:none">${h(rawOutput)}</pre>`
@@ -3448,11 +3456,11 @@ async function openTaskDetail(id) {
       ${errorHtml}
       ${metaHtml}
       <div class="task-actions-bar">
-        <span class="ta-label">Hành động:</span>
-        <span class="ta-btn ta-btn-claim" onclick="claimTask('${id}')"><i class="bi bi-hand-index-thumb"></i> Claim</span>
-        <span class="ta-btn ta-btn-enqueue" onclick="enqueueTask('${id}')"><i class="bi bi-play-fill"></i> Enqueue</span>
-        <span class="ta-btn ta-btn-complete" onclick="completeTask('${id}')"><i class="bi bi-check-lg"></i> Complete</span>
-        <span class="ta-btn ta-btn-claim" onclick="retryTask('${id}')"><i class="bi bi-arrow-clockwise"></i> Retry</span>
+        <span class="ta-label">${_i('action_bar_label','Hành động:')}</span>
+        <span class="ta-btn ta-btn-claim" onclick="claimTask('${id}')"><i class="bi bi-hand-index-thumb"></i> ${_i('btn_claim','Claim')}</span>
+        <span class="ta-btn ta-btn-enqueue" onclick="enqueueTask('${id}')"><i class="bi bi-play-fill"></i> ${_i('btn_enqueue','Enqueue')}</span>
+        <span class="ta-btn ta-btn-complete" onclick="completeTask('${id}')"><i class="bi bi-check-lg"></i> ${_i('btn_complete','Complete')}</span>
+        <span class="ta-btn ta-btn-claim" onclick="retryTask('${id}')"><i class="bi bi-arrow-clockwise"></i> ${_i('btn_retry','Retry')}</span>
       </div>
       <div class="modal-tabs">
         <button class="modal-tab active" onclick="switchModalTab('output');return false"><i class="bi bi-file-text"></i> Output</button>
@@ -3473,7 +3481,7 @@ function switchModalTab(name) {
   const tabNames = {output:_i('modal_tab_output','Output'), events:_i('modal_tab_events','Sự kiện'), runs:_i('modal_tab_runs','Lần chạy'), notes:_i('modal_tab_notes','Notes')};
   document.querySelectorAll('.modal-tab').forEach(b => {
     const txt = b.textContent.trim().toLowerCase();
-    const match = (name==='output'&&txt.includes('output')) || (name==='events'&&txt.includes('sự kiện')) || (name==='runs'&&txt.includes('lần chạy')) || (name==='notes'&&txt.includes('notes'));
+    const match = (name==='output'&&txt.includes('output')) || (name==='events'&&(txt.includes('sự kiện')||txt.includes('events'))) || (name==='runs'&&(txt.includes('lần chạy')||txt.includes('runs'))) || (name==='notes'&&txt.includes('notes'));
     b.classList.toggle('active', match);
   });
   document.querySelectorAll('.modal-tab-pane').forEach(p => {
@@ -3648,7 +3656,7 @@ function editTaskStatus(current) {
   const cell = document.getElementById('modalStatusCell');
   if (!cell) return;
   const opts = ['ready','running','blocked','stale','done','error','killed'];
-  cell.innerHTML = `<select class="edit-inline-select" id="inlineStatusSelect">${opts.map(s => `<option value="${s}"${s===current?' selected':''}>${S_LABEL[s]||s}</option>`).join('')}</select> <button class="edit-save-btn" onclick="saveTaskStatus()"><i class="bi bi-check"></i></button> <button class="edit-cancel-btn" onclick="cancelTaskEdit('modalStatusCell')">Huỷ</button>`;
+  cell.innerHTML = `<select class="edit-inline-select" id="inlineStatusSelect">${opts.map(s => `<option value="${s}"${s===current?' selected':''}>${S_LABEL[s]||s}</option>`).join('')}</select> <button class="edit-save-btn" onclick="saveTaskStatus()"><i class="bi bi-check"></i></button> <button class="edit-cancel-btn" onclick="cancelTaskEdit('modalStatusCell')">${_i('btn_cancel','Huỷ')}</button>`;
 }
 
 async function saveTaskStatus() {
@@ -3673,7 +3681,7 @@ function editTaskOutput(current) {
   const pane = document.getElementById('pane-output');
   if (!pane) return;
   const text = current || '';
-  pane.innerHTML = `<textarea class="form-control" id="inlineOutputText" rows="10" style="font-family:var(--font-mono);font-size:.78rem;background:var(--bg2);border-color:var(--border);color:var(--text);resize:vertical">${h(text).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')}</textarea><div style="margin-top:6px;display:flex;gap:6px"><button class="edit-save-btn" onclick="saveTaskOutput()"><i class="bi bi-check"></i> Lưu</button><button class="edit-cancel-btn" onclick="cancelEditOutput()">Huỷ</button></div>`;
+  pane.innerHTML = `<textarea class="form-control" id="inlineOutputText" rows="10" style="font-family:var(--font-mono);font-size:.78rem;background:var(--bg2);border-color:var(--border);color:var(--text);resize:vertical">${h(text).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')}</textarea><div style="margin-top:6px;display:flex;gap:6px"><button class="edit-save-btn" onclick="saveTaskOutput()"><i class="bi bi-check"></i> ${_i('btn_save','Lưu')}</button><button class="edit-cancel-btn" onclick="cancelEditOutput()">${_i('btn_cancel','Huỷ')}</button></div>`;
 }
 
 async function saveTaskOutput() {
@@ -3709,7 +3717,7 @@ async function loadWorkers() {
     const r = await fetch('/api/workers');
     const data = await r.json();
     renderWorkers(data);
-    document.getElementById('workerRefreshLabel').textContent = new Date().toLocaleTimeString('vi-VN');
+    document.getElementById('workerRefreshLabel').textContent = new Date().toLocaleTimeString(currentLang==='en'?'en-US':'vi-VN');
   } catch(e) { document.getElementById('workerTable').innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.error+'Lỗi: '+e.message+'</td></tr>'; }
 }
 
@@ -3741,7 +3749,7 @@ function renderWorkers(data) {
     <tr>
       <td>${avatar(w.profile,'sm')} ${h(w.profile)}</td>
       <td><code style="font-size:.72rem">${h(w.pid,'—')}</code></td>
-      <td>${w.status==='running' ? badge('running') : '<span class="badge-dot" style="background:var(--text3)1a;color:var(--text3);border:1px solid var(--text3)33"><span class="status-dot" style="background:var(--text3)"></span>Ngoại tuyến</span>'}</td>
+      <td>${w.status==='running' ? badge('running') : '<span class="badge-dot" style="background:var(--text3)1a;color:var(--text3);border:1px solid var(--text3)33"><span class="status-dot" style="background:var(--text3)"></span>'+_i('worker_status_off','Ngoại tuyến')+'</span>'}</td>
       <td style="font-size:.75rem">${w.current_task ? `<a href="#" onclick="openTaskDetail('${w.current_task.id}');return false" class="task-link">${h(w.current_task.title).substring(0,40)}</a>` : '<span style="color:var(--text3)">—</span>'}</td>
       <td>${w.task_count}</td>
       <td style="font-size:.7rem;color:var(--text2)" title="${fmtTime(w.last_heartbeat||w.started_at)}">${fmtRelative(w.last_heartbeat||w.started_at)}</td>
@@ -3755,7 +3763,7 @@ async function loadFiles() {
     const r = await fetch('/api/files');
     const data = await r.json();
     renderFiles(data);
-    document.getElementById('fileRefreshLabel').textContent = new Date().toLocaleTimeString('vi-VN');
+    document.getElementById('fileRefreshLabel').textContent = new Date().toLocaleTimeString(currentLang==='en'?'en-US':'vi-VN');
   } catch(e) { document.getElementById('fileTable').innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.error+'Lỗi: '+e.message+'</td></tr>'; }
 }
 
@@ -3794,10 +3802,10 @@ function openFilePreview(idx) {
         <span class="meta-chip"><i class="bi bi-file-earmark"></i> <strong>${sizeStr}</strong></span>
       </div>
       <div class="output-toolbar">
-        <span class="toolbar-btn active" id="fileViewRendered" onclick="toggleFileView('rendered');return false"><i class="bi bi-eye"></i> Hiển thị</span>
-        <span class="toolbar-btn" id="fileViewRaw" onclick="toggleFileView('raw');return false"><i class="bi bi-braces"></i> Raw</span>
+        <span class="toolbar-btn active" id="fileViewRendered" onclick="toggleFileView('rendered');return false"><i class="bi bi-eye"></i> ${_i('toolbar_rendered','Hiển thị')}</span>
+        <span class="toolbar-btn" id="fileViewRaw" onclick="toggleFileView('raw');return false"><i class="bi bi-braces"></i> ${_i('toolbar_raw','Raw')}</span>
         <span class="toolbar-sep"></span>
-        <span class="toolbar-btn" onclick="copyFileContent()" title="Ctrl+C"><i class="bi bi-clipboard"></i> Copy</span>
+        <span class="toolbar-btn" onclick="copyFileContent()" title="Ctrl+C"><i class="bi bi-clipboard"></i> ${_i('toolbar_copy','Copy')}</span>
       </div>
       <div class="output-block" id="fileBlockContent">${renderMd(raw)}</div>
       <pre class="output-raw" id="fileRawContent" style="display:none">${h(raw)}</pre>
@@ -3897,23 +3905,23 @@ function renderAnalytics(d) {
     <div class="analytics-card">
       <div class="health-ring" style="background:conic-gradient(${healthColor} ${d.health*3.6}deg, var(--surface3) 0)">${d.health}</div>
       <div>
-        <div class="analytics-mini-label">Health Score</div>
+        <div class="analytics-mini-label">${_i('health_score','Health Score')}</div>
         <div class="health-bar-wrap"><div class="health-bar-fill" style="width:${d.health}%;background:${healthColor}"></div></div>
       </div>
     </div>
     <div class="analytics-card">
       <div class="health-ring" style="background:conic-gradient(var(--green) ${d.completion_rate*3.6}deg, var(--surface3) 0)">${d.completion_rate}%</div>
       <div>
-        <div class="analytics-mini-label">Hoàn thành</div>
+        <div class="analytics-mini-label">${_i('health_complete','Hoàn thành')}</div>
         <div class="analytics-mini-val" style="color:var(--green)">${d.done}<small style="font-size:.65rem;font-weight:400">/${d.total}</small></div>
       </div>
     </div>
     <div class="analytics-card">
       <div>
         <div class="analytics-mini-val" style="color:var(--red)">${d.stale}</div>
-        <div class="analytics-mini-label">Treo</div>
+        <div class="analytics-mini-label">${_i('health_stale','Treo')}</div>
         <div class="analytics-mini-val" style="color:var(--yellow);margin-top:4px">${d.running}</div>
-        <div class="analytics-mini-label">Đang chạy</div>
+        <div class="analytics-mini-label">${_i('health_running','Đang chạy')}</div>
       </div>
     </div>`;
 }
@@ -3928,14 +3936,15 @@ function toggleAnalytics() {
   if (row) row.style.display = window._analyticsVisible ? '' : 'none';
   if (toggle) {
     toggle.querySelector('i').className = 'bi ' + (window._analyticsVisible ? 'bi-chevron-up' : 'bi-chevron-down');
-    toggle.childNodes[1] && (toggle.childNodes[1].textContent = window._analyticsVisible ? ' Thu gọn analytics' : ' Mở analytics');
+    const txt = ' ' + (window._analyticsVisible ? _i('analytics_collapse','Thu gọn analytics') : _i('analytics_expand','Mở analytics'));
+    if (toggle.childNodes[1]) toggle.childNodes[1].textContent = txt;
   }
 }
 (function initAnalytics() {
   if (!window._analyticsVisible) {
     document.getElementById('analyticsRow').style.display = 'none';
     var t = document.getElementById('analyticsToggle');
-    if (t) { t.querySelector('i').className = 'bi bi-chevron-down'; t.childNodes[1].textContent = ' Mở analytics'; }
+    if (t) { t.querySelector('i').className = 'bi bi-chevron-down'; t.childNodes[1].textContent = ' ' + _i('analytics_expand','Mở analytics'); }
   }
   document.getElementById('analyticsToggle').style.display = 'inline';
 })();
@@ -4051,7 +4060,7 @@ async function loadConversations() {
   try {
     const r = await fetch('/api/conversations');
     _conversationsData = await r.json();
-    document.getElementById('convRefreshLabel').textContent = new Date().toLocaleTimeString('vi-VN');
+    document.getElementById('convRefreshLabel').textContent = new Date().toLocaleTimeString(currentLang==='en'?'en-US':'vi-VN');
     const el = document.getElementById('conversationTable');
     if (!_conversationsData || !_conversationsData.length) {
       el.innerHTML = '<tr><td colspan="8" class="empty-state">Không có hội thoại nào</td></tr>';
@@ -4242,7 +4251,7 @@ openTaskDetail = async function(id) {
   const task = window._taskDetail;
   notePane.innerHTML = `<div style="margin-bottom:6px;font-size:.72rem;color:var(--text2)"><i class="bi bi-info-circle"></i> Thêm ghi chú cho task này (lưu vào body field)</div>
     <textarea class="form-control" id="notesTextArea" rows="5" style="font-family:var(--font-sans);font-size:.82rem;background:var(--bg2);border-color:var(--border);color:var(--text);resize:vertical">${h((task&&task.body)||'')}</textarea>
-    <div style="margin-top:6px"><button class="edit-save-btn" onclick="saveTaskNotes()"><i class="bi bi-check"></i> Lưu notes</button></div>`;
+    <div style="margin-top:6px"><button class="edit-save-btn" onclick="saveTaskNotes()"><i class="bi bi-check"></i> ${_i('btn_save','Lưu')} ${_i('modal_tab_notes','notes')}</button></div>`;
   panesContainer.insertBefore(notePane, panesContainer.querySelector('#pane-runs').nextSibling);
 };
 
