@@ -2,21 +2,39 @@
 import io, json, os, signal, sqlite3, subprocess, sys, time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, session, redirect
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('FLASK_SECRET', os.urandom(24).hex())
 
-FLASK_USER = os.environ.get('FLASK_USER', '')
-FLASK_PASS = os.environ.get('FLASK_PASS', '')
+FLASK_USER = os.environ.get('FLASK_USER', 'admin')
+FLASK_PASS = os.environ.get('FLASK_PASS', 'admin')
 
-if FLASK_USER and FLASK_PASS:
-    @app.before_request
-    def check_auth():
-        auth = request.authorization
-        if not auth or auth.username != FLASK_USER or auth.password != FLASK_PASS:
-            return ('Unauthorized', 401, {'WWW-Authenticate': 'Basic realm="Dashboard"'})
+@app.before_request
+def check_auth():
+    if request.path in ('/login', '/api/login'):
+        return
+    if 'user' not in session:
+        if request.path.startswith('/api/'):
+            return jsonify({'error': 'Unauthorized'}), 401
+        return render_template_string(LOGIN_PAGE)
+
+@app.route('/login', methods=['POST'])
+def do_login():
+    data = request.json if request.is_json else request.form
+    username = data.get('username', '')
+    password = data.get('password', '')
+    if username == FLASK_USER and password == FLASK_PASS:
+        session['user'] = username
+        return jsonify({'ok': True})
+    return jsonify({'ok': False, 'message': 'Sai tài khoản hoặc mật khẩu'}), 401
+
+@app.route('/logout')
+def do_logout():
+    session.pop('user', None)
+    return redirect('/')
 
 DB = os.path.expandvars(r'%LOCALAPPDATA%\hermes\kanban.db')
 CRON_JSON = os.path.expandvars(r'%LOCALAPPDATA%\hermes\cron\jobs.json')
@@ -868,6 +886,94 @@ def api_search():
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
+
+LOGIN_PAGE = r"""<!DOCTYPE html>
+<html lang="vi" data-bs-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login — Monitor</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<style>
+:root {
+  --bg: #08080f; --surface: #111127; --border: #252550; --border2: #35356a;
+  --text: #d0d0ec; --text2: #7878aa; --accent: #818cf8; --accent2: #6366f1;
+  --red: #f87171; --radius: 10px; --radius-lg: 14px; --shadow-lg: 0 8px 28px rgba(0,0,0,.45);
+  --font-sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
+}
+[data-bs-theme="light"] {
+  --bg: #f5f5fa; --surface: #ffffff; --border: #d4d4e0; --border2: #b8b8cc;
+  --text: #1a1a2e; --text2: #6b6b8a; --accent: #6366f1; --accent2: #4f46e5;
+}
+body { background: var(--bg); color: var(--text); font-family: var(--font-sans);
+  display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+.login-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 2.5rem 2rem; width: 380px; box-shadow: var(--shadow-lg); text-align: center;
+}
+.login-card h3 { font-weight: 700; font-size: 1.2rem; letter-spacing: -.3px; margin-bottom: .25rem;
+  background: linear-gradient(135deg, var(--text), var(--accent)); -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent; background-clip: text; }
+.login-card .sub { font-size: .75rem; color: var(--text2); margin-bottom: 1.5rem; }
+.form-group { margin-bottom: 1rem; text-align: left; }
+.form-group label { font-size: .7rem; color: var(--text2); display: block; margin-bottom: 3px; }
+.form-control {
+  background: rgba(255,255,255,.04); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: .55rem .75rem; color: var(--text); font-size: .85rem; width: 100%; box-sizing: border-box;
+  transition: .2s; outline: none;
+}
+.form-control:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(129,140,248,.12); }
+.form-control::placeholder { color: var(--text2); }
+.btn-login {
+  width: 100%; padding: .6rem; border: none; border-radius: var(--radius);
+  background: var(--accent); color: #fff; font-size: .85rem; font-weight: 600;
+  cursor: pointer; transition: .2s; margin-top: .5rem;
+}
+.btn-login:hover { background: var(--accent2); transform: translateY(-1px); }
+.btn-login:disabled { opacity: .5; cursor: not-allowed; }
+.error-msg { color: var(--red); font-size: .72rem; margin-top: .75rem; display: none; }
+</style>
+</head>
+<body>
+<div class="login-card">
+  <h3>Monitor</h3>
+  <div class="sub">Hermes Dashboard</div>
+  <div class="form-group">
+    <label>Tên đăng nhập</label>
+    <input type="text" class="form-control" id="username" placeholder="admin" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()">
+  </div>
+  <div class="form-group">
+    <label>Mật khẩu</label>
+    <input type="password" class="form-control" id="password" placeholder="········" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+  </div>
+  <button class="btn-login" id="loginBtn" onclick="doLogin()">Đăng nhập</button>
+  <div class="error-msg" id="loginError"></div>
+</div>
+<script>
+var themeEl = document.documentElement;
+var saved = localStorage.getItem('theme');
+var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+themeEl.setAttribute('data-bs-theme', saved || (prefersDark ? 'dark' : 'light'));
+
+async function doLogin() {
+  var u = document.getElementById('username').value.trim();
+  var p = document.getElementById('password').value;
+  if (!u || !p) return;
+  var btn = document.getElementById('loginBtn');
+  var err = document.getElementById('loginError');
+  btn.disabled = true; btn.textContent = 'Đang đăng nhập...'; err.style.display = 'none';
+  try {
+    var r = await fetch('/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u, password:p})});
+    var d = await r.json();
+    if (d.ok) { location.reload(); }
+    else { err.textContent = d.message || 'Lỗi'; err.style.display = 'block'; }
+  } catch(e) { err.textContent = 'Lỗi kết nối'; err.style.display = 'block'; }
+  btn.disabled = false; btn.textContent = 'Đăng nhập';
+}
+</script>
+</body>
+</html>"""
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="vi" data-bs-theme="dark">
@@ -2571,6 +2677,7 @@ a.task-link:hover {
       </span>
       <button class="icon-btn" id="themeToggle" onclick="toggleTheme()" title="Chế độ sáng/tối" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="bi bi-moon-stars"></i></button>
       <button class="icon-btn" id="langToggle" onclick="switchLang(currentLang==='vi'?'en':'vi')" title="Language" data-bs-toggle="tooltip" data-bs-placement="bottom" style="width:auto;padding:0 8px;font-size:.68rem;font-weight:600"><i class="bi bi-translate"></i> VI</button>
+      <button class="icon-btn" onclick="location.href='/logout'" title="Đăng xuất" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="bi bi-box-arrow-right"></i></button>
     </div>
   </div>
 
