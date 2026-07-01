@@ -7,4 +7,8 @@ HERMES_DB_PATH = pathlib.Path(
     os.environ.get('HERMES_DB_PATH', os.path.expandvars(r'%LOCALAPPDATA%\hermes\kanban.db'))
 )
 HERMES_MONITOR_URL = os.environ.get('HERMES_MONITOR_URL', 'http://localhost:8093')
-HERMES_VAULT_ROOT = HERMES_ROOT.parent
+HERMES_VAULT_ROOT = HERMES_ROOT.parent.parent
+
+if not HERMES_VAULT_ROOT.exists():
+    print(f"[WARN] HERMES_VAULT_ROOT not found: {HERMES_VAULT_ROOT} — "
+          f"check your actual vault directory structure")
