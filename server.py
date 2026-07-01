@@ -963,6 +963,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   --bs-border-color: var(--border);
   --bs-primary: var(--accent);
   --bs-primary-rgb: 129, 140, 248;
+
+  /* Toast */
+  --toast-bg: rgba(17, 17, 39, 0.92);
 }
 
 /* === Light Mode === */
@@ -1006,6 +1009,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   --bs-border-color: var(--border);
   --bs-primary: var(--accent);
   --bs-primary-rgb: 99, 102, 241;
+
+  /* Toast */
+  --toast-bg: rgba(255, 255, 255, 0.92);
 }
 
 [data-bs-theme="light"] .app-header {
@@ -1423,7 +1429,7 @@ body {
 }
 
 .toast-msg {
-  background: rgba(24, 24, 58, 0.92);
+  background: var(--toast-bg);
   border: 1px solid var(--border2);
   color: var(--text);
   border-radius: var(--radius-sm);

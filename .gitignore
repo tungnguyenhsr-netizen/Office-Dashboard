@@ -4,3 +4,6 @@ __pycache__/
 logs/
 health-reports/
 audit-*.md
+.env
+*.db
+state/
