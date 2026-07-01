@@ -2909,17 +2909,29 @@ function updateLangToggleUI() {
   el.innerHTML = currentLang === 'vi' ? '<i class="bi bi-translate"></i> VI' : '<i class="bi bi-translate"></i> EN';
 }
 function applyLangToStatic() {
-  // Update tab names
+  // Update tab names - only replace text nodes, preserve icons and badges
   const tabIds = {system:'tab_system',kanban:'tab_kanban',cron:'tab_cron',outputs:'tab_outputs',workers:'tab_workers',files:'tab_files',conversations:'tab_conversations'};
   Object.entries(tabIds).forEach(([k,v]) => {
     const el = document.getElementById('tab-'+k);
-    if (el) { const icon = el.querySelector('i'); el.innerText = _i(v, LANG.vi[v]); if(icon) el.prepend(icon); }
+    if (!el) return;
+    for (let node of el.childNodes) {
+      if (node.nodeType === 3 && node.textContent.trim()) {
+        node.textContent = ' ' + _i(v, LANG.vi[v]) + ' ';
+        break;
+      }
+    }
   });
   // Update sub-tab names
   const subIds = {stale:'subtab_stale',all:'subtab_all',done:'subtab_done'};
   Object.entries(subIds).forEach(([k,v]) => {
     const el = document.getElementById('subtab-'+k);
-    if (el) { const icon = el.querySelector('i'); el.innerText = _i(v, LANG.vi[v]); if(icon) el.prepend(icon); }
+    if (!el) return;
+    for (let node of el.childNodes) {
+      if (node.nodeType === 3 && node.textContent.trim()) {
+        node.textContent = ' ' + _i(v, LANG.vi[v]) + ' ';
+        break;
+      }
+    }
   });
   // Update analytics toggle
   const at = document.getElementById('analyticsToggle');
