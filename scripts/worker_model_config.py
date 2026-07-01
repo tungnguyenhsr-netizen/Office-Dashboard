@@ -7,11 +7,13 @@ Fallback:  deepseek-v4-flash
 Triggers:  HTTP 500, 429, or timeout > 30s
 Flag:      after 3 consecutive fallbacks in one cycle -> insight report
 """
-import json, os, re
+import json, os, re, sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from config import HERMES_ROOT as ROOT_PATH
 
-ROOT = Path(r'C:\Users\YOURNAME\Documents\YourVault\Efforts\Office-Dashboard')
+ROOT = Path(ROOT_PATH)
 LOG_DIR = ROOT / 'logs'
 _FALLBACK_STATE_PATH = ROOT / 'state' / 'fallback-state.json'
 TZ = timezone(timedelta(hours=7))

@@ -4,12 +4,14 @@
 Runs inline inside orchestrator cycle. Does NOT modify orchestrator/dispatcher logic.
 Tags pending tasks with model_override based on brand/guideline keywords.
 """
-import json, re
+import json, re, sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from config import HERMES_ROOT as ROOT_PATH, HERMES_DB_PATH as DB_PATH
 
-ROOT = Path(r'C:\Users\YOURNAME\Documents\YourVault\Efforts\Office-Dashboard')
-DB = Path(r'%LOCALAPPDATA%\hermes\kanban.db')
+ROOT = Path(ROOT_PATH)
+DB = Path(DB_PATH)
 LOG_DIR = ROOT / 'logs'
 TZ = timezone(timedelta(hours=7))
 

@@ -4,18 +4,23 @@ import json, os, re, subprocess, sys, time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import urllib.request
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from worker_model_config import (
     should_fallback, log_fallback, flag_for_insight,
     reset_fallback_cycle, model_override_payload,
     fallback_summary, parse_crash_reason, MAX_CONSECUTIVE_FALLBACKS,
     _fallback_state,
 )
+from config import HERMES_ROOT as ROOT, HERMES_DB_PATH as DB_PATH, HERMES_MONITOR_URL as MONITOR_URL, HERMES_VAULT_ROOT as VAULT_ROOT
 
-ROOT = Path(r'C:\Users\YOURNAME\Documents\YourVault\Efforts\Office-Dashboard')
+ROOT = Path(ROOT)
+DB_PATH = Path(DB_PATH)
+VAULT_ROOT = Path(VAULT_ROOT)
+DB = DB_PATH
+MONITOR = MONITOR_URL + '/api/dashboard'
+
 STATE = ROOT / 'state' / 'last-action.json'
 LOG = ROOT / 'logs' / ('orchestrator-%s.log' % datetime.now(timezone(timedelta(hours=7))).strftime('%Y-%m-%d'))
-MONITOR = 'http://localhost:8093/api/dashboard'
-DB = Path(os.path.expandvars(r'%LOCALAPPDATA%\hermes\kanban.db'))
 
 # Ensure dirs
 STATE.parent.mkdir(parents=True, exist_ok=True)
@@ -58,7 +63,7 @@ def get(url, timeout=20):
         return json.loads(resp.read().decode('utf-8'))
 
 def http_json(method, path, payload=None):
-    url = 'http://localhost:8093' + path
+    url = MONITOR_URL + path
     data = None
     if payload is not None:
         data = json.dumps(payload).encode('utf-8')
@@ -154,7 +159,7 @@ def _normalize_artifacts(artifacts):
 def _try_resolve_artifact_under_efforts(task_id, title, missing):
     """Fallback: if default DB path is missing, try locate the file anywhere under Efforts."""
     try:
-        base = ROOT.parent / 'Efforts'
+        base = VAULT_ROOT / 'Efforts'
         needles = set()
         for p in missing:
             rel = Path(p)
@@ -402,7 +407,7 @@ def _detect_project(task: dict):
 
 
 def _project_dir(project: str):
-    return ROOT.parent / 'Efforts' / project
+    return VAULT_ROOT / 'Efforts' / project
 
 
 def _move_artifacts(artifacts, project: str) -> dict:
@@ -477,11 +482,11 @@ def reroute_completed_outputs(max_age_sec=6*60*60):
 
 # ------------------------ atlas insight report ------------------------
 
-_INSIGHT_DIR = ROOT.parent / 'Insights'
+_INSIGHT_DIR = VAULT_ROOT / 'Insights'
 
 
 def _read_index_cache(max_age_sec=4*60*60):
-    idx = ROOT.parent / 'Atlas' / 'vault-index.json'
+    idx = VAULT_ROOT / 'Atlas' / 'vault-index.json'
     try:
         if idx.exists() and (NOW() - idx.stat().st_mtime) < max_age_sec:
             lines = idx.read_text(encoding='utf-8')
@@ -492,7 +497,7 @@ def _read_index_cache(max_age_sec=4*60*60):
 
 
 def _load_me():
-    for p in [ROOT.parent / 'Atlas' / 'Me.md']:
+    for p in [VAULT_ROOT / 'Atlas' / 'Me.md']:
         try:
             if p.exists():
                 return p.read_text(encoding='utf-8')
@@ -521,7 +526,7 @@ def _format_ts(ts):
 
 def _safe_wiki(path: str):
     p = Path(path)
-    vault_root = ROOT.parent.parent
+    vault_root = VAULT_ROOT.parent
     try:
         rel = p.relative_to(vault_root)
         text = str(rel)
@@ -1039,21 +1044,6 @@ def main():
         new_ids.append(tid)
 
     if not new_ids:
-        # backlog backfill: nếu backlog thấp thì tự sinh task mới
-        try:
-            ready_count = data.get('tasks_summary', {}).get('active_count', 0)
-        except Exception:
-            ready_count = 0
-        if int(ready_count) < 5 and can_act(state, 'backfill'):
-            try:
-                import runpy
-                script = ROOT / 'scripts' / 'backfill_tasks.py'
-                if script.exists():
-                    runpy.run_path(str(script), run_name='__backfill__')
-                    mark_acted(state, 'backfill')
-                    log('backfill ran ready_count=%s' % ready_count)
-            except Exception as e:
-                log('backfill error: %s' % e)
         log('no new tasks to evaluate')
         return
 

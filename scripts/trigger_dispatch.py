@@ -2,8 +2,10 @@
 """Trigger a single dispatcher pass after enqueue, with profile-assignment alias."""
 import os, subprocess, sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from config import HERMES_ROOT as ROOT_PATH
 
-ROOT = Path(r'C:\Users\YOURNAME\Documents\YourVault\Efforts\Office-Dashboard')
+ROOT = Path(ROOT_PATH)
 _DEFAULT_BOARD = os.getenv('HERMES_KANBAN_BOARD', 'default')
 _HERMES_CLI = os.getenv('HERMES_CLI', r'%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\hermes.exe')
 
