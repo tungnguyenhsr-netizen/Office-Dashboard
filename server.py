@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import io, json, os, sqlite3, subprocess, sys, time
+import io, json, os, sqlite3, subprocess, sys, time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from flask import Flask, jsonify, render_template_string, request
@@ -12,6 +12,31 @@ DB = os.path.expandvars(r'%LOCALAPPDATA%\hermes\kanban.db')
 CRON_JSON = os.path.expandvars(r'%LOCALAPPDATA%\hermes\cron\jobs.json')
 BOARD = "%"
 TZ = timezone(timedelta(hours=7))
+
+_FILE_INDEX = []
+_FILE_INDEX_TIME = 0
+_FILE_INDEX_TTL = 30
+
+def _get_file_index():
+    global _FILE_INDEX, _FILE_INDEX_TIME
+    now = time.time()
+    if _FILE_INDEX and now - _FILE_INDEX_TIME < _FILE_INDEX_TTL:
+        return _FILE_INDEX
+    _FILE_INDEX = []
+    efforts_dir = os.path.join(VAULT_ROOT, 'Efforts')
+    if os.path.exists(efforts_dir):
+        for root, dirs, files in os.walk(efforts_dir):
+            for fn in files:
+                if fn.endswith('.md'):
+                    path = os.path.join(root, fn)
+                    rel = os.path.relpath(path, VAULT_ROOT)
+                    try:
+                        st = os.stat(path)
+                        _FILE_INDEX.append({'name': fn, 'path': rel, 'modified': st.st_mtime, 'size': st.st_size})
+                    except:
+                        pass
+    _FILE_INDEX_TIME = now
+    return _FILE_INDEX
 
 def db_conn(readonly=True):
     conn = sqlite3.connect(DB, timeout=5)
@@ -264,7 +289,23 @@ def _update_task_killed(task_id):
 
 @app.route('/api/task/<task_id>/retry', methods=['POST'])
 def api_task_retry(task_id):
-    return jsonify({'ok': True, 'message': f'Retry {task_id} (no-op, read-only DB)'})
+    conn = db_conn(readonly=False)
+    c = conn.cursor()
+    try:
+        existing = c.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not existing:
+            conn.close()
+            return jsonify({'ok': False, 'message': 'Task không tồn tại'}), 404
+        c.execute("UPDATE tasks SET status='ready', consecutive_failures=0, last_failure_error=NULL WHERE id=?",
+                  (task_id,))
+        c.execute("INSERT INTO task_events (task_id, kind, created_at) VALUES (?, 'retry', ?)",
+                  (task_id, int(time.time())))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'message': f'Retry {task_id} thành công'})
+    except Exception as e:
+        conn.close()
+        return jsonify({'ok': False, 'message': str(e)}), 500
 
 @app.route('/api/task/<task_id>/kill', methods=['POST'])
 def api_task_kill(task_id):
@@ -417,6 +458,238 @@ def api_bulk_kill():
     conn.close()
     ok_count = sum(1 for r in results if r['ok'])
     return jsonify({'ok': True, 'count': len(ids), 'killed': ok_count, 'results': results, 'message': f'Kill {ok_count}/{len(ids)} tasks thành công'})
+
+@app.route('/api/tasks', methods=['POST'])
+def api_create_task():
+    data = request.json or {}
+    title = data.get('title', '').strip()
+    assignee = data.get('assignee', '').strip()
+    description = data.get('description', '').strip()
+    if not title:
+        return jsonify({'ok': False, 'message': 'Thiếu tiêu đề task'}), 400
+    task_id = str(uuid.uuid4())[:36]
+    now = int(time.time())
+    conn = db_conn(readonly=False)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO tasks (id, title, assignee, status, created_at) VALUES (?, ?, ?, 'ready', ?)",
+                  (task_id, title, assignee or None, now))
+        c.execute("INSERT INTO task_events (task_id, kind, created_at) VALUES (?, 'created', ?)",
+                  (task_id, now))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'task_id': task_id, 'message': 'Đã tạo task'})
+    except Exception as e:
+        conn.close()
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+@app.route('/api/task/<task_id>', methods=['PATCH'])
+def api_update_task(task_id):
+    data = request.json or {}
+    conn = db_conn(readonly=False)
+    c = conn.cursor()
+    try:
+        existing = c.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not existing:
+            conn.close()
+            return jsonify({'ok': False, 'message': 'Task không tồn tại'}), 404
+        updates = []
+        params = []
+        if 'status' in data and data['status'] != existing['status']:
+            updates.append("status = ?")
+            params.append(data['status'])
+            c.execute("INSERT INTO task_events (task_id, kind, created_at) VALUES (?, ?, ?)",
+                      (task_id, data['status'], int(time.time())))
+        if 'assignee' in data and data['assignee'] != existing['assignee']:
+            updates.append("assignee = ?")
+            params.append(data['assignee'])
+        if updates:
+            params.append(task_id)
+            c.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", params)
+            conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'message': 'Đã cập nhật task'})
+    except Exception as e:
+        conn.close()
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+@app.route('/api/task/<task_id>/output', methods=['PATCH'])
+def api_update_task_output(task_id):
+    data = request.json or {}
+    output = data.get('output', '')
+    conn = db_conn(readonly=False)
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE tasks SET result = ? WHERE id = ?",
+                  (output, task_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'message': 'Đã cập nhật output'})
+    except Exception as e:
+        conn.close()
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+@app.route('/api/workers')
+def api_workers():
+    conn = db_conn()
+    c = conn.cursor()
+    rows = c.execute("""
+        SELECT r.profile, r.worker_pid, r.status as run_status,
+               r.started_at, r.last_heartbeat_at,
+               t.id as task_id, t.title, t.assignee
+        FROM task_runs r
+        JOIN tasks t ON t.id = r.task_id
+        WHERE r.profile IS NOT NULL AND r.profile != ''
+        ORDER BY r.profile, r.started_at DESC
+    """).fetchall()
+    conn.close()
+    workers = {}
+    for r in rows:
+        p = r['profile']
+        if p not in workers:
+            workers[p] = {
+                'profile': p,
+                'pid': r['worker_pid'],
+                'current_task': None,
+                'task_count': 0,
+                'last_heartbeat': r['last_heartbeat_at'],
+                'started_at': r['started_at'],
+                'status': 'offline'
+            }
+        workers[p]['task_count'] += 1
+        if r['run_status'] == 'running' and not workers[p].get('current_task'):
+            workers[p]['current_task'] = {'id': r['task_id'], 'title': r['title']}
+            workers[p]['status'] = 'running'
+            workers[p]['pid'] = r['worker_pid']
+    return jsonify(list(workers.values()))
+
+@app.route('/api/files')
+def api_files():
+    results = []
+    efforts_dir = os.path.join(VAULT_ROOT, 'Efforts')
+    if not os.path.exists(efforts_dir):
+        return jsonify([])
+    for root, dirs, files in os.walk(efforts_dir):
+        for fn in files:
+            if fn.endswith('.md'):
+                path = os.path.join(root, fn)
+                rel = os.path.relpath(path, VAULT_ROOT)
+                try:
+                    st = os.stat(path)
+                    preview = ''
+                    try:
+                        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                            preview = f.read()
+                    except:
+                        pass
+                    results.append({
+                        'name': fn,
+                        'path': rel,
+                        'modified': st.st_mtime,
+                        'size': st.st_size,
+                        'preview': preview,
+                    })
+                except:
+                    pass
+    results.sort(key=lambda x: x['modified'], reverse=True)
+    return jsonify(results)
+
+@app.route('/api/cron/<name>/toggle', methods=['POST'])
+def api_cron_toggle(name):
+    try:
+        with open(CRON_JSON, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        jobs = config.get('jobs', [])
+        found = None
+        for j in jobs:
+            if j.get('name') == name:
+                found = j
+                break
+        if not found:
+            return jsonify({'ok': False, 'message': 'Không tìm thấy cron job'}), 404
+        new_enabled = not found.get('enabled', True)
+        found['enabled'] = new_enabled
+        with open(CRON_JSON, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        return jsonify({'ok': True, 'enabled': new_enabled, 'message': f"{'Bật' if new_enabled else 'Tắt'} {name} thành công"})
+    except Exception as e:
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+@app.route('/api/export/tasks')
+def api_export_tasks():
+    fmt = request.args.get('format', 'json').lower()
+    conn = db_conn()
+    c = conn.cursor()
+    rows = c.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
+    conn.close()
+    data = [dict(r) for r in rows]
+    if fmt == 'csv':
+        import io as _io
+        if not data:
+            return jsonify([])
+        keys = list(data[0].keys())
+        buf = _io.StringIO()
+        buf.write(','.join(f'"{k}"' for k in keys) + '\n')
+        quote = chr(34)
+        for row in data:
+            vals = []
+            for k in keys:
+                v = str(row.get(k, '')).replace(quote, quote+quote)
+                vals.append(f'"{v}"')
+            buf.write(','.join(vals) + '\n')
+        csv_text = buf.getvalue()
+        buf.close()
+        return csv_text, 200, {'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename=tasks.csv'}
+    return jsonify(data)
+
+@app.route('/api/analytics')
+def api_analytics():
+    conn = db_conn()
+    c = conn.cursor()
+    total = c.execute("SELECT COUNT(1) FROM tasks").fetchone()[0]
+    done = c.execute("SELECT COUNT(1) FROM tasks WHERE status='done'").fetchone()[0]
+    stale = c.execute("SELECT COUNT(1) FROM tasks WHERE status='stale'").fetchone()[0]
+    running = c.execute("SELECT COUNT(1) FROM tasks WHERE status='running'").fetchone()[0]
+    error = c.execute("SELECT COUNT(1) FROM tasks WHERE status='error'").fetchone()[0]
+    recent_completed = c.execute("SELECT COUNT(1) FROM tasks WHERE status='done' AND completed_at > ?", (int(time.time()) - 86400,)).fetchone()[0]
+    avg_failures = c.execute("SELECT AVG(consecutive_failures) FROM tasks WHERE consecutive_failures > 0").fetchone()[0] or 0
+    conn.close()
+    completion_rate = round(done / total * 100, 1) if total else 0
+    health = max(0, min(100, round(
+        (completion_rate * 0.4) + (max(0, 100 - stale * 5) * 0.3) + (recent_completed * 5 * 0.3)
+    )))
+    return jsonify({
+        'total': total, 'done': done, 'stale': stale, 'running': running, 'error': error,
+        'completion_rate': completion_rate, 'recent_completed': recent_completed,
+        'avg_failures': round(avg_failures, 1), 'health': health
+    })
+
+@app.route('/api/search')
+def api_search():
+    q = request.args.get('q', '').strip().lower()
+    if not q:
+        return jsonify({'tasks': [], 'files': [], 'workers': []})
+    conn = db_conn()
+    c = conn.cursor()
+    tasks = c.execute("""SELECT id, title, assignee, status FROM tasks
+        WHERE LOWER(title) LIKE ? OR LOWER(id) LIKE ? OR LOWER(COALESCE(assignee,'')) LIKE ?
+        LIMIT 20""", (f'%{q}%', f'%{q}%', f'%{q}%')).fetchall()
+    workers = c.execute("""SELECT DISTINCT r.profile, r.status as run_status, t.title
+        FROM task_runs r LEFT JOIN tasks t ON t.id = r.task_id
+        WHERE LOWER(r.profile) LIKE ? AND r.profile != ''
+        LIMIT 10""", (f'%{q}%',)).fetchall()
+    conn.close()
+    files = []
+    ql = q.lower()
+    for f in _get_file_index():
+        if ql in f['name'].lower():
+            files.append(f)
+            if len(files) >= 10: break
+    return jsonify({
+        'tasks': [dict(r) for r in tasks],
+        'files': files,
+        'workers': [dict(r) for r in workers],
+    })
 
 @app.route('/')
 def index():
@@ -1735,6 +2008,347 @@ a.task-link:hover {
   .app-header { flex-wrap: wrap; gap: .5rem; padding: .6rem 1rem; }
   .toast-container { left: 1rem; right: 1rem; max-width: none; }
 }
+
+/* === Workers Grid === */
+.worker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: .75rem;
+  margin-bottom: .25rem;
+}
+
+.worker-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.1rem;
+  transition: var(--transition-base);
+  animation: fadeUp .35s ease backwards;
+}
+
+.worker-card:hover {
+  border-color: var(--border2);
+  box-shadow: var(--shadow-sm);
+}
+
+.worker-card .wc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: .6rem;
+}
+
+.worker-card .wc-name {
+  font-weight: 600;
+  font-size: .85rem;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worker-card .wc-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: .7rem;
+  color: var(--text2);
+  padding: 2px 0;
+}
+
+.worker-card .wc-row strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.worker-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.worker-dot.running { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.worker-dot.offline { background: var(--text3); }
+.worker-dot.idle { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+
+/* === File Viewer === */
+.file-path {
+  font-size: .68rem;
+  color: var(--text3);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  font-size: .7rem;
+  color: var(--text2);
+}
+
+.file-preview-modal .modal-dialog { max-width: 1200px; }
+
+.file-preview-body {
+  font-family: var(--font-mono);
+  font-size: .76rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--bg2);
+  padding: 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  line-height: 1.65;
+}
+
+/* === Inline Edit Styles === */
+.editable-field {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--border2);
+  transition: var(--transition-fast);
+}
+
+.editable-field:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.edit-inline {
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font-size: .78rem;
+  color: var(--text);
+  font-family: var(--font-sans);
+  outline: none;
+  width: auto;
+  min-width: 100px;
+}
+
+.edit-inline:focus {
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.edit-inline-select {
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font-size: .78rem;
+  color: var(--text);
+  outline: none;
+}
+
+.edit-save-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: .68rem;
+  cursor: pointer;
+  margin-left: 4px;
+  transition: var(--transition-fast);
+}
+
+.edit-save-btn:hover {
+  opacity: .85;
+}
+
+.edit-cancel-btn {
+  background: transparent;
+  color: var(--text2);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: .68rem;
+  cursor: pointer;
+  margin-left: 2px;
+  transition: var(--transition-fast);
+}
+
+.edit-cancel-btn:hover {
+  color: var(--text);
+  border-color: var(--text3);
+}
+
+/* === Form Controls for modals === */
+.form-control:focus {
+  box-shadow: 0 0 0 2px var(--accent-glow);
+  border-color: var(--accent);
+}
+
+.form-control::placeholder {
+  color: var(--text3);
+  font-size: .78rem;
+}
+
+/* === Modal Footer === */
+.modal-footer {
+  border-top: 1px solid var(--border-light);
+  padding: .75rem 1.25rem;
+}
+
+/* === Create Task Animation === */
+#createTaskBtn:disabled {
+  opacity: .5;
+  pointer-events: none;
+}
+
+/* === Skeleton Loading === */
+.skeleton {
+  background: linear-gradient(90deg, var(--surface2) 25%, var(--surface3) 50%, var(--surface2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+.skeleton-h { height: .75rem; margin: 3px 0; }
+.skeleton-row { margin: .5rem 0; }
+.skeleton-card { height: 80px; border-radius: var(--radius-lg); margin: 0; }
+.skeleton-badge { display: inline-block; width: 60px; height: 18px; border-radius: 50px; }
+
+/* === Analytics Cards === */
+.analytics-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: .75rem;
+  margin-bottom: 1.25rem;
+}
+.analytics-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: .9rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  transition: var(--transition-base);
+}
+.analytics-card:hover { border-color: var(--border2); box-shadow: var(--shadow-sm); }
+.analytics-mini-val { font-size: 1.4rem; font-weight: 800; letter-spacing: -.5px; line-height: 1; }
+.analytics-mini-label { font-size: .65rem; color: var(--text3); text-transform: uppercase; letter-spacing: .4px; margin-top: 2px; }
+.health-ring {
+  width: 42px; height: 42px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: .72rem; flex-shrink: 0;
+}
+
+/* === Search Dropdown === */
+.search-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  margin-top: 4px;
+  box-shadow: var(--shadow-lg);
+  max-height: 400px;
+  overflow-y: auto;
+  z-index: var(--z-dropdown);
+  display: none;
+}
+.search-dropdown.show { display: block; }
+.search-result-group { padding: .35rem .6rem; font-size: .62rem; color: var(--text3); text-transform: uppercase; letter-spacing: .6px; font-weight: 600; background: var(--bg2); border-bottom: 1px solid var(--border-light); }
+.search-result-item {
+  padding: .45rem .75rem;
+  cursor: pointer;
+  font-size: .76rem;
+  border-bottom: 1px solid var(--border-light);
+  transition: var(--transition-fast);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.search-result-item:hover { background: var(--accent-subtle); }
+.search-result-item:last-child { border-bottom: none; }
+.search-no-result { padding: .75rem; text-align: center; color: var(--text3); font-size: .72rem; }
+
+/* === Filter Bar === */
+.filter-bar { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; margin-bottom: .75rem; }
+.filter-chip {
+  font-size: .65rem; padding: .2em .55em; border-radius: 50px;
+  border: 1px solid var(--border2); background: var(--surface2); color: var(--text2);
+  cursor: pointer; transition: var(--transition-fast); display: flex; align-items: center; gap: 4px;
+  user-select: none;
+}
+.filter-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
+.filter-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.filter-chip .fc-remove { font-size: .6rem; margin-left: 2px; opacity: .6; }
+.filter-chip.active .fc-remove { opacity: 1; }
+
+/* === Task Action Buttons === */
+.task-actions-bar {
+  display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: .75rem;
+  padding: .5rem .6rem; background: var(--bg2); border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light); align-items: center;
+}
+.task-actions-bar .ta-label { font-size: .62rem; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; margin-right: .3rem; }
+
+/* === Cron Toggle === */
+.cron-toggle {
+  display: flex; align-items: center; gap: 6px;
+}
+.cron-status-led {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.cron-status-led.enabled { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.cron-status-led.disabled { background: var(--text3); }
+
+/* === Export Buttons === */
+.export-section { display: flex; gap: .35rem; margin-left: auto; }
+
+/* === Health bar === */
+.health-bar-wrap { height: 6px; background: var(--surface3); border-radius: 3px; margin-top: 4px; overflow: hidden; }
+.health-bar-fill { height: 100%; border-radius: 3px; transition: width .6s ease; }
+
+/* === Task action btn === */
+.ta-btn {
+  font-size: .65rem; padding: .18rem .5rem; border-radius: 50px; cursor: pointer;
+  transition: var(--transition-fast); border: 1px solid transparent;
+  display: flex; align-items: center; gap: 3px;
+}
+.ta-btn-claim { background: var(--blue-subtle); color: var(--blue); border-color: var(--blue); }
+.ta-btn-claim:hover { background: var(--blue); color: #fff; }
+.ta-btn-enqueue { background: var(--accent-subtle); color: var(--accent); border-color: var(--accent2); }
+.ta-btn-enqueue:hover { background: var(--accent); color: #fff; }
+.ta-btn-complete { background: var(--green-subtle); color: var(--green); border-color: var(--green); }
+.ta-btn-complete:hover { background: var(--green); color: #fff; }
+
+/* === Mobile Polish === */
+@media (max-width: 992px) {
+  .analytics-row { grid-template-columns: repeat(3, 1fr); }
+  .kanban-col { flex: 0 0 220px; }
+}
+@media (max-width: 768px) {
+  .analytics-row { grid-template-columns: repeat(2, 1fr); gap: .5rem; }
+  .analytics-mini-val { font-size: 1.1rem; }
+  .stat-wrap { grid-template-columns: repeat(2, 1fr); }
+  .search-box { width: 140px; }
+  .search-box:focus { width: 180px; }
+  .worker-grid { grid-template-columns: 1fr; }
+  .filter-bar { gap: .25rem; }
+  .app-main { padding: .75rem 1rem; }
+  .app-header { padding: .6rem 1rem; gap: .4rem; }
+  .app-header h5 { font-size: .85rem; }
+  .nav-tabs .nav-link { font-size: .7rem; padding: .5rem .7rem; }
+  .table { font-size: .72rem; }
+  .modal-xl .modal-dialog { max-width: 98vw; }
+}
+@media (max-width: 576px) {
+  .stat-wrap { grid-template-columns: 1fr; gap: .5rem; }
+  .analytics-row { grid-template-columns: 1fr; gap: .4rem; }
+  .search-box { width: 100px; }
+  .search-box:focus { width: 140px; }
+  .app-header { flex-wrap: wrap; gap: .4rem; padding: .5rem .8rem; }
+  .toast-container { left: .5rem; right: .5rem; max-width: none; }
+  .worker-grid { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
@@ -1750,10 +2364,16 @@ a.task-link:hover {
     <div class="d-flex align-items-center gap-2">
       <div class="search-wrap">
         <i class="bi bi-search"></i>
-        <input type="text" class="search-box" id="searchInput" placeholder="Tìm task...">
+        <input type="text" class="search-box" id="searchInput" placeholder="Tìm toàn bộ..." autocomplete="off">
         <span class="kbd" id="searchKbd">Ctrl K</span>
+        <div class="search-dropdown" id="searchDropdown"></div>
       </div>
+      <button class="icon-btn" onclick="openCreateTaskModal()" title="Tạo task mới" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="bi bi-plus-lg"></i></button>
       <button class="icon-btn" onclick="loadDashboard()" title="Refresh" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="bi bi-arrow-clockwise"></i></button>
+      <span class="export-section">
+        <button class="btn btn-sm btn-outline-secondary" onclick="exportTasks('csv')" title="Xuất CSV" style="font-size:.65rem"><i class="bi bi-download me-1"></i>CSV</button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="exportTasks('json')" title="Xuất JSON" style="font-size:.65rem"><i class="bi bi-download me-1"></i>JSON</button>
+      </span>
       <button class="icon-btn" id="themeToggle" onclick="toggleTheme()" title="Chế độ sáng/tối" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="bi bi-moon-stars"></i></button>
     </div>
   </div>
@@ -1764,12 +2384,15 @@ a.task-link:hover {
       <li class="nav-item"><button class="nav-link" id="tab-kanban" data-bs-toggle="tab" data-bs-target="#pane-kanban"><i class="bi bi-columns-gap"></i>Kanban</button></li>
       <li class="nav-item"><button class="nav-link" id="tab-cron" data-bs-toggle="tab" data-bs-target="#pane-cron"><i class="bi bi-alarm"></i>Cron <span class="badge bg-secondary ms-1" id="cronBadge">0</span></button></li>
       <li class="nav-item"><button class="nav-link" id="tab-outputs" data-bs-toggle="tab" data-bs-target="#pane-outputs"><i class="bi bi-file-text"></i>Outputs</button></li>
+      <li class="nav-item"><button class="nav-link" id="tab-workers" data-bs-toggle="tab" data-bs-target="#pane-workers"><i class="bi bi-people"></i>Workers</button></li>
+      <li class="nav-item"><button class="nav-link" id="tab-files" data-bs-toggle="tab" data-bs-target="#pane-files"><i class="bi bi-folder"></i>Files</button></li>
     </ul>
 
     <div class="tab-content mt-3">
       <!-- System -->
       <div class="tab-pane fade show active" id="pane-system">
         <div class="stat-wrap" id="statCards"></div>
+        <div class="analytics-row" id="analyticsRow"></div>
         <div class="row g-2 mb-3">
           <div class="col-lg-7">
             <div class="card h-100"><div class="card-header py-2 px-3"><i class="bi bi-activity me-1"></i>Hoạt động gần đây</div><div class="card-body p-0"><div class="table-wrap" style="border:none;border-radius:0"><table class="table"><thead><tr><th style="width:36px">#</th><th>Task</th><th style="width:70px">Trạng thái</th><th style="width:80px">Thời gian</th></tr></thead><tbody id="recentTable"></tbody></table></div></div></div>
@@ -1784,6 +2407,13 @@ a.task-link:hover {
         <div class="d-flex justify-content-between align-items-center mb-2">
           <div class="sec-title m-0"><i class="bi bi-exclamation-triangle"></i>Tác vụ treo <span class="badge bg-danger ms-1" id="staleCountBadge">0</span></div>
           <div class="d-flex gap-2">
+            <div class="filter-bar" id="taskFilterBar">
+              <span class="filter-chip active" onclick="setTaskFilter('all')" id="filterAll">All</span>
+              <span class="filter-chip" onclick="setTaskFilter('running')" id="filterRunning">Đang chạy</span>
+              <span class="filter-chip" onclick="setTaskFilter('stale')" id="filterStale">Treo</span>
+              <span class="filter-chip" onclick="setTaskFilter('error')" id="filterError">Lỗi</span>
+              <span class="filter-chip" onclick="setTaskFilter('done')" id="filterDone">Xong</span>
+            </div>
             <button class="btn btn-sm btn-outline-warning d-none" id="killSelectedBtn" onclick="killSelected()"><i class="bi bi-x-lg me-1"></i>Kill đã chọn (<span id="selectedCount">0</span>)</button>
             <button class="btn btn-sm btn-outline-danger" onclick="killAllDead()"><i class="bi bi-trash3 me-1"></i>Kill all</button>
           </div>
@@ -1805,7 +2435,7 @@ a.task-link:hover {
           <div class="sec-title m-0"><i class="bi bi-alarm"></i>Lịch trình Cron <span class="badge bg-secondary ms-1" id="cronCountBadge">0</span></div>
           <span><span class="refresh-dot" id="cronRefreshDot"></span><small class="text-secondary" style="font-size:.7rem" id="cronRefreshLabel">30s auto</small></span>
         </div>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Tên</th><th>Lịch</th><th>Lần chạy tới</th><th>Lần cuối</th><th>Trạng thái</th><th>Lỗi</th></tr></thead><tbody id="cronTable"></tbody></table></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Tên</th><th>Lịch</th><th>Lần chạy tới</th><th>Lần cuối</th><th>Trạng thái</th><th>Lỗi</th><th style="width:60px">On/Off</th></tr></thead><tbody id="cronTable"></tbody></table></div>
       </div>
 
       <!-- Outputs -->
@@ -1815,6 +2445,25 @@ a.task-link:hover {
           <span><span class="refresh-dot" id="outputRefreshDot"></span><small class="text-secondary" style="font-size:.7rem" id="outputRefreshLabel"></small></span>
         </div>
         <div class="table-wrap"><table class="table"><thead><tr><th style="width:36px">STT</th><th>Tiêu đề</th><th>Người phụ trách</th><th style="width:70px">Trạng thái</th><th style="width:120px">Thời gian</th></tr></thead><tbody id="outputTable"></tbody></table></div>
+      </div>
+
+      <!-- Workers -->
+      <div class="tab-pane fade" id="pane-workers">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div class="sec-title m-0"><i class="bi bi-people"></i>Worker Agents</div>
+          <span><span class="refresh-dot" id="workerRefreshDot"></span><small class="text-secondary" style="font-size:.7rem" id="workerRefreshLabel"></small></span>
+        </div>
+        <div id="workerGrid" class="worker-grid"></div>
+        <div class="table-wrap mt-3"><table class="table"><thead><tr><th>Profile</th><th>PID</th><th>Status</th><th>Task hiện tại</th><th>Tổng task</th><th>Hoạt động gần nhất</th></tr></thead><tbody id="workerTable"></tbody></table></div>
+      </div>
+
+      <!-- Files -->
+      <div class="tab-pane fade" id="pane-files">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div class="sec-title m-0"><i class="bi bi-folder"></i>File Viewer</div>
+          <span><span class="refresh-dot" id="fileRefreshDot"></span><small class="text-secondary" style="font-size:.7rem" id="fileRefreshLabel"></small></span>
+        </div>
+        <div class="table-wrap"><table class="table"><thead><tr><th style="width:36px">STT</th><th>Tên file</th><th>Đường dẫn</th><th style="width:80px">Kích thước</th><th style="width:120px">Sửa đổi</th><th style="width:80px"></th></tr></thead><tbody id="fileTable"></tbody></table></div>
       </div>
     </div>
   </div>
@@ -1828,6 +2477,28 @@ a.task-link:hover {
 <div class="modal fade" id="tasksModal" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
   <div class="modal-header"><h5 class="modal-title" id="tasksModalTitle"></h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
   <div class="modal-body p-0"><div class="table-wrap m-0" style="border:none;border-radius:0"><table class="table"><thead><tr><th>ID</th><th>Tiêu đề</th><th>Trạng thái</th><th>PID</th><th>Lỗi</th></tr></thead><tbody id="tasksModalBody"></tbody></table></div></div>
+</div></div></div>
+
+<div class="modal fade" id="createTaskModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+  <div class="modal-header"><h5 class="modal-title"><i class="bi bi-plus-circle me-1"></i>Tạo task mới</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body">
+    <div class="mb-3">
+      <label class="form-label" style="font-size:.75rem;color:var(--text2)">Tiêu đề <span style="color:var(--red)">*</span></label>
+      <input type="text" class="form-control" id="createTaskTitle" placeholder="Nhập tiêu đề task..." style="background:var(--bg2);border-color:var(--border);color:var(--text);font-size:.82rem">
+    </div>
+    <div class="mb-3">
+      <label class="form-label" style="font-size:.75rem;color:var(--text2)">Người phụ trách</label>
+      <input type="text" class="form-control" id="createTaskAssignee" placeholder="Tên người phụ trách..." style="background:var(--bg2);border-color:var(--border);color:var(--text);font-size:.82rem">
+    </div>
+    <div class="mb-3">
+      <label class="form-label" style="font-size:.75rem;color:var(--text2)">Mô tả</label>
+      <textarea class="form-control" id="createTaskDesc" rows="3" placeholder="Mô tả chi tiết..." style="background:var(--bg2);border-color:var(--border);color:var(--text);font-size:.82rem;resize:vertical"></textarea>
+    </div>
+  </div>
+  <div class="modal-footer" style="border-color:var(--border-light);padding:.75rem 1.25rem">
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Huỷ</button>
+    <button class="btn btn-sm btn-primary" id="createTaskBtn" onclick="submitCreateTask()"><i class="bi bi-check-lg me-1"></i>Tạo task</button>
+  </div>
 </div></div></div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -1902,41 +2573,55 @@ const EMPTY_ICONS = {
 function renderMd(t) {
   if (!t) return '';
   let s = String(t);
+  // Preserve code blocks before HTML escaping
+  const codes = [];
+  s = s.replace(/```([\s\S]*?)```/g, (_,c) => { const i=codes.length; codes.push({text:c,block:true}); return `\x00CB${i}\x00`; });
+  s = s.replace(/`([^`]+)`/g, (_,c) => { const i=codes.length; codes.push({text:c,block:false}); return `\x00CB${i}\x00`; });
+  // HTML escape
   s = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  s = s.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Restore code blocks with proper tags
+  s = s.replace(/\x00CB(\d+)\x00/g, (_,i) => {
+    const entry = codes[parseInt(i)];
+    const esc = entry.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if (!entry.block) return `<code>${esc}</code>`;
+    return `<pre><code>${esc}</code></pre>`;
+  });
+  // Links
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Inline formatting (order: bold before italic)
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
   s = s.replace(/__([^_]+)__/g, '<u>$1</u>');
   s = s.replace(/~~([^~]+)~~/g, '<s>$1</s>');
-  s = s.replace(/^#####?\s+(.*)$/gm, '<h6>$1</h6>');
-  s = s.replace(/^####\s+(.*)$/gm, '<h6>$1</h6>');
-  s = s.replace(/^###\s+(.*)$/gm, '<h6>$1</h6>');
-  s = s.replace(/^##\s+(.*)$/gm, '<h6>$1</h6>');
-  s = s.replace(/^#\s+(.*)$/gm, '<h6>$1</h6>');
+  // Headings (h1-h6)
+  s = s.replace(/^(#{1,6})\s+(.*)$/gm, (_, h, c) => `<h${Math.min(h.length,6)}>${c}</h${Math.min(h.length,6)}>`);
+  // Horizontal rules
   s = s.replace(/^-{3,}$/gm, '<hr>');
-  s = s.replace(/^[\s]*[-*]\s+(.*)$/gm, '<li>$1</li>');
-  s = s.replace(/(<li[\s>][\s\S]*?<\/li>)/g, '<ul>$1</ul>');
-  s = s.replace(/<\/ul>\s*<ul>/g, '');
-  s = s.replace(/^[\s]*\d+\.\s+(.*)$/gm, '<li>$1</li>');
-  s = s.replace(/<\/ul>\s*<ul>/g, '');
-  // tables: iterate lines to handle last row without trailing \n
+  // Lists: wrap consecutive list items in single <ul>
+  s = s.replace(/(?:^|\n)[ \t]*[-*]\s+.*(?:\n[ \t]*[-*]\s+.*)*/g, m => '<ul>'+(m.replace(/^\n/,'').split(/\n/).map(l => '<li>'+l.replace(/^[ \t]*[-*]\s+/,'')+'</li>').join(''))+'</ul>');
+  s = s.replace(/(?:^|\n)[ \t]*\d+\.\s+.*(?:\n[ \t]*\d+\.\s+.*)*/g, m => '<ol>'+(m.replace(/^\n/,'').split(/\n/).map(l => '<li>'+l.replace(/^[ \t]*\d+\.\s+/,'')+'</li>').join(''))+'</ol>');
+  // Tables
   ;(function(){
-    var lines = s.split('\n'), out = [], i = 0;
+    const lines = s.split('\n'), out = [];
+    let i = 0;
     while (i < lines.length) {
-      if (/^\|.*\|$/.test(lines[i])) {
-        var tbl = [], j = i;
-        while (j < lines.length && /^\|.*\|$/.test(lines[j])) { tbl.push(lines[j]); j++; }
+      if (/^\|.*\|$/.test(lines[i].trim())) {
+        const tbl = [];
+        let j = i;
+        while (j < lines.length && /^\|.*\|$/.test(lines[j].trim())) { tbl.push(lines[j]); j++; }
         if (tbl.length >= 2) {
-          var hasSep = tbl[1] && /^\|[\s:-]+\|$/.test(tbl[1].trim());
-          var hRows = hasSep ? tbl.slice(0,1) : [];
-          var dRows = hasSep ? tbl.slice(2) : tbl;
-          var html = '<div class="table-wrap" style="margin:4px 0"><table>';
-          if (hRows.length) html += '<thead><tr>'+hRows[0].split('|').filter(function(c){return c.trim()}).map(function(c){return '<th>'+c.trim()+'</th>'}).join('')+'</tr></thead>';
+          const hasSep = tbl[1] && /^\|[\s:-]+\|$/.test(tbl[1].trim());
+          const hRows = hasSep ? tbl.slice(0,1) : [];
+          const dRows = hasSep ? tbl.slice(2) : tbl;
+          let html = '<div class="table-wrap" style="margin:4px 0;font-size:.72rem"><table>';
+          if (hRows.length) {
+            html += '<thead><tr>'+hRows[0].split('|').filter(c=>c.trim()).map(c=>'<th>'+c.trim()+'</th>').join('')+'</tr></thead>';
+          }
           if (dRows.length) {
             html += '<tbody>';
-            for (var k=0;k<dRows.length;k++) html += '<tr>'+dRows[k].split('|').filter(function(c){return c.trim()}).map(function(c){return '<td>'+c.trim()+'</td>'}).join('')+'</tr>';
+            for (let k=0;k<dRows.length;k++) {
+              html += '<tr>'+dRows[k].split('|').filter(c=>c.trim()).map(c=>'<td>'+c.trim()+'</td>').join('')+'</tr>';
+            }
             html += '</tbody>';
           }
           out.push(html+'</table></div>');
@@ -1946,15 +2631,17 @@ function renderMd(t) {
     }
     s = out.join('\n');
   })();
+  // Paragraphs: double newline = paragraph break, single newline = <br>
   s = s.replace(/\n{2,}/g, '</p><p>');
   s = s.replace(/\n/g, '<br>');
+  // Remove empty paragraphs
+  s = s.replace(/<p>\s*<\/p>/g, '');
   s = '<p>' + s + '</p>';
-  s = s.replace(/<p><pre/g, '<pre').replace(/<\/pre><\/p>/g, '</pre>');
-  s = s.replace(/<p><li/g, '<li').replace(/<\/li><\/p>/g, '</li>');
-  s = s.replace(/<p><ul/g, '<ul').replace(/<\/ul><\/p>/g, '</ul>');
-  s = s.replace(/<p><h6/g, '<h6').replace(/<\/h6><\/p>/g, '</h6>');
-  s = s.replace(/<p><hr/g, '<hr').replace(/<\/p>/g, '');
-  s = s.replace(/<p><div/g, '<div').replace(/<\/div><\/p>/g, '</div>');
+  // Clean up wrappers around block elements
+  s = s.replace(/<p><(pre|code|h[1-6]|ul|ol|li|hr|div|table|thead|tbody|tr|th|td)/g, '<$1');
+  s = s.replace(/<\/(pre|code|h[1-6]|ul|ol|li|div|table|thead|tbody|tr|th|td)><\/p>/g, '</$1>');
+  // Fix: </p> before block elements
+  s = s.replace(/<\/p>\n?<(pre|h[1-6]|ul|ol|div|table)/g, '<$1');
   return s;
 }
 
@@ -2000,12 +2687,13 @@ async function loadDashboard() {
       </div>
     `).join('');
 
-    document.getElementById('staleTable').innerHTML = s.length
-      ? s.map(r => {
+    const filtered = window._taskFilter === 'all' ? s : s.filter(r => r.status === window._taskFilter);
+    document.getElementById('staleTable').innerHTML = filtered.length
+      ? filtered.map(r => {
           const isStale = r.status === 'stale';
           return `<tr class="${isStale?'stale-row':''}"><td><input type="checkbox" class="stale-check" value="${r.id}" onchange="updateSelected()"></td><td><code class="task-id" onclick="openTaskDetail('${r.id}')">${h(r.id,'').substring(0,12)}</code></td><td>${h(r.title,'(no title)')}</td><td>${assigneeCell(r.assignee)}</td><td>${h(r.worker_pid)}</td><td>${h(r.age_human)}</td><td>${r.reason ? '<span class="badge-dot" style="background:'+(r.reason==='timeout'?'var(--yellow)':'var(--red)')+'1a;color:'+(r.reason==='timeout'?'var(--yellow)':'var(--red)')+';border:1px solid '+(r.reason==='timeout'?'var(--yellow)':'var(--red)')+'33"><span class="status-dot" style="background:'+(r.reason==='timeout'?'var(--yellow)':'var(--red)')+'"></span>'+r.reason+'</span>' : '<span style="color:var(--text3)">—</span>'}</td><td><button class="btn btn-sm btn-outline-warning me-1 py-0 px-2" onclick="retryTask('${r.id}')"><i class="bi bi-arrow-clockwise"></i></button><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="killTask('${r.id}')"><i class="bi bi-x-lg"></i></button></td></tr>`;
         }).join('')
-      : '<tr><td colspan="8" class="empty-state">'+EMPTY_ICONS.noTasks+'Không có tác vụ treo</td></tr>';
+      : '<tr><td colspan="8" class="empty-state">'+EMPTY_ICONS.noTasks+'Không có tác vụ'+(window._taskFilter!=='all'?' ('+window._taskFilter+')':'')+'</td></tr>';
     document.getElementById('staleCountBadge').textContent = t.stale_count;
     document.getElementById('selectAll').checked = false;
     document.getElementById('killSelectedBtn').classList.add('d-none');
@@ -2089,9 +2777,10 @@ function renderCron(crons) {
     ? crons.map(c => {
         const st = c.last_status || 'unknown';
         const err = c.last_error || c.last_delivery_error || '';
-        return `<tr><td><strong>${h(c.name)}</strong></td><td><code style="color:var(--text3);font-size:.72rem">${h(c.schedule_display)}</code></td><td style="color:var(--text2);font-size:.72rem" title="${fmtTime(c.next_run_at)}">${fmtRelative(c.next_run_at)}</td><td style="color:var(--text2);font-size:.72rem" title="${fmtTime(c.last_run_at)}">${fmtRelative(c.last_run_at)}</td><td>${badge(st)}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.72rem" title="${err.replace(/"/g,'&quot;')}">${err ? err.substring(0,60)+(err.length>60?'...':'') : '<span style="color:var(--text3)">—</span>'}</td></tr>`;
+        const enabled = c.enabled !== false;
+        return `<tr><td><strong>${h(c.name)}</strong></td><td><code style="color:var(--text3);font-size:.72rem">${h(c.schedule_display)}</code></td><td style="color:var(--text2);font-size:.72rem" title="${fmtTime(c.next_run_at)}">${fmtRelative(c.next_run_at)}</td><td style="color:var(--text2);font-size:.72rem" title="${fmtTime(c.last_run_at)}">${fmtRelative(c.last_run_at)}</td><td>${badge(st)}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.72rem" title="${err.replace(/"/g,'&quot;')}">${err ? err.substring(0,60)+(err.length>60?'...':'') : '<span style="color:var(--text3)">—</span>'}</td><td class="text-center"><span class="cron-toggle" style="cursor:pointer" onclick="toggleCron('${c.name}')"><span class="cron-status-led ${enabled?'enabled':'disabled'}"></span><span style="font-size:.62rem;color:${enabled?'var(--green)':'var(--text3)'}">${enabled?'ON':'OFF'}</span></span></td></tr>`;
       }).join('')
-    : '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.noCron+'Không có dữ liệu cron</td></tr>';
+    : '<tr><td colspan="7" class="empty-state">'+EMPTY_ICONS.noCron+'Không có dữ liệu cron</td></tr>';
 }
 
 async function loadOutputs() {
@@ -2172,7 +2861,7 @@ async function openTaskDetail(id) {
 
     // Metadata chips
     const metaHtml = `<div class="meta-chips">
-      ${badge(t.status)}
+      <span id="modalStatusCell">${badge(t.status)} <span class="edit-inline-btn" onclick="editTaskStatus('${t.status}')" title="Sửa trạng thái" style="cursor:pointer;color:var(--text3);font-size:.65rem;margin-left:2px"><i class="bi bi-pencil"></i></span></span>
       <span class="meta-chip-sep"></span>
       <span class="meta-chip"><i class="bi bi-123"></i> <strong>${t.id.substring(0,10)}</strong></span>
       <span class="meta-chip-sep"></span>
@@ -2194,6 +2883,8 @@ async function openTaskDetail(id) {
         <span class="toolbar-btn" id="outViewRaw" onclick="toggleOutputView('raw');return false"><i class="bi bi-braces"></i> Raw</span>
         <span class="toolbar-sep"></span>
         <span class="toolbar-btn" id="copyBtn" onclick="copyOutput()" title="Ctrl+C"><i class="bi bi-clipboard"></i> Copy</span>
+        <span class="toolbar-btn" onclick="editTaskOutput(window._taskOutputData?.rawOutput)" title="Sửa output" style="margin-left:2px"><i class="bi bi-pencil"></i> Sửa</span>
+        <span class="toolbar-sep"></span>
         <span class="toolbar-btn" id="expandBtn" onclick="toggleOutputExpand()" title="Toàn màn hình"><i class="bi bi-arrows-fullscreen" id="expandIcon"></i></span>
       </div>
       <div class="output-block" id="outputBlockContent">${renderMd(rawOutput)}</div>
@@ -2217,6 +2908,13 @@ async function openTaskDetail(id) {
     document.getElementById('modalBody').innerHTML = `
       ${errorHtml}
       ${metaHtml}
+      <div class="task-actions-bar">
+        <span class="ta-label">Hành động:</span>
+        <span class="ta-btn ta-btn-claim" onclick="claimTask('${id}')"><i class="bi bi-hand-index-thumb"></i> Claim</span>
+        <span class="ta-btn ta-btn-enqueue" onclick="enqueueTask('${id}')"><i class="bi bi-play-fill"></i> Enqueue</span>
+        <span class="ta-btn ta-btn-complete" onclick="completeTask('${id}')"><i class="bi bi-check-lg"></i> Complete</span>
+        <span class="ta-btn ta-btn-claim" onclick="retryTask('${id}')"><i class="bi bi-arrow-clockwise"></i> Retry</span>
+      </div>
       <div class="modal-tabs">
         <button class="modal-tab active" onclick="switchModalTab('output');return false"><i class="bi bi-file-text"></i> Output</button>
         <button class="modal-tab" onclick="switchModalTab('events');return false"><i class="bi bi-clock-history"></i> Sự kiện <span class="tab-count">${evs.length}</span></button>
@@ -2225,14 +2923,20 @@ async function openTaskDetail(id) {
       <div class="modal-tab-pane active" id="pane-output">${outputHtml}</div>
       <div class="modal-tab-pane" id="pane-events">${evHtml}</div>
       <div class="modal-tab-pane" id="pane-runs">${runsHtml}</div>`;
-
     window._taskOutputData = { rawOutput, taskId: id };
-    new bootstrap.Modal(document.getElementById('taskModal')).show();
+    var modalEl = document.getElementById('taskModal');
+    var modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+    modal.show();
   } catch(e) { toast('Lỗi: '+e, 'danger'); }
 }
 
 function switchModalTab(name) {
-  document.querySelectorAll('.modal-tab').forEach((b,i) => b.classList.toggle('active', b.textContent.trim().toLowerCase().includes(name)));
+  const tabNames = {output:'Output', events:'Sự kiện', runs:'Lần chạy'};
+  document.querySelectorAll('.modal-tab').forEach(b => {
+    const txt = b.textContent.trim().toLowerCase();
+    const match = (name==='output'&&txt.includes('output')) || (name==='events'&&txt.includes('sự kiện')) || (name==='runs'&&txt.includes('lần chạy'));
+    b.classList.toggle('active', match);
+  });
   document.querySelectorAll('.modal-tab-pane').forEach(p => {
     p.classList.toggle('active', p.id === 'pane-'+name || (name==='output'&&p.id==='pane-output'));
   });
@@ -2286,11 +2990,6 @@ async function copyOutput() {
   } catch(e) { toast('Lỗi: '+e, 'danger'); }
 }
 
-document.getElementById('searchInput').addEventListener('input', () => {
-  if (document.querySelector('#tab-kanban.active')) loadDashboard();
-  if (document.querySelector('#tab-outputs.active')) loadOutputs();
-});
-
 document.addEventListener('keydown', function(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
     e.preventDefault();
@@ -2325,10 +3024,20 @@ document.querySelectorAll('[data-bs-toggle="tab"]').forEach(tab => {
     if (e.target.id === 'tab-cron') {
       document.getElementById('cronRefreshDot').classList.add('loading');
       document.getElementById('cronRefreshLabel').textContent = 'Đang tải...';
+      loadDashboard().then(() => {
+        document.getElementById('cronRefreshDot').classList.remove('loading');
+        document.getElementById('cronRefreshLabel').textContent = '30s auto';
+      });
       if (!cronTimer) cronTimer = setInterval(async () => { await loadDashboard(); document.getElementById('cronRefreshDot').classList.remove('loading'); document.getElementById('cronRefreshLabel').textContent = '30s auto'; }, 30000);
     } else if (e.target.id === 'tab-outputs') {
       loadOutputs();
       if (cronTimer) { clearInterval(cronTimer); cronTimer = null; }
+    } else if (e.target.id === 'tab-workers') {
+      if (cronTimer) { clearInterval(cronTimer); cronTimer = null; }
+      loadWorkers();
+    } else if (e.target.id === 'tab-files') {
+      if (cronTimer) { clearInterval(cronTimer); cronTimer = null; }
+      loadFiles();
     } else { if (cronTimer) { clearInterval(cronTimer); cronTimer = null; } }
   });
 });
@@ -2358,6 +3067,379 @@ function toggleTheme() {
   if (icon) icon.className = theme === 'dark' ? 'bi bi-moon-stars' : 'bi bi-sun';
 })();
 
+// === Create Task ===
+function openCreateTaskModal() {
+  document.getElementById('createTaskTitle').value = '';
+  document.getElementById('createTaskAssignee').value = '';
+  document.getElementById('createTaskDesc').value = '';
+  document.getElementById('createTaskBtn').disabled = false;
+  document.getElementById('createTaskBtn').innerHTML = '<i class="bi bi-check-lg me-1"></i>Tạo task';
+  new bootstrap.Modal(document.getElementById('createTaskModal')).show();
+}
+
+async function submitCreateTask() {
+  const title = document.getElementById('createTaskTitle').value.trim();
+  if (!title) { toast('Vui lòng nhập tiêu đề', 'warning'); return; }
+  const btn = document.getElementById('createTaskBtn');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Đang tạo...';
+  try {
+    const r = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        title,
+        assignee: document.getElementById('createTaskAssignee').value.trim(),
+        description: document.getElementById('createTaskDesc').value.trim(),
+      })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      toast(d.message, 'success');
+      bootstrap.Modal.getInstance(document.getElementById('createTaskModal')).hide();
+      loadDashboard();
+    } else {
+      toast(d.message || 'Lỗi tạo task', 'danger');
+    }
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+  btn.disabled = false; btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Tạo task';
+}
+
+// === Inline Edit Task Status (in modal) ===
+function editTaskStatus(current) {
+  const cell = document.getElementById('modalStatusCell');
+  if (!cell) return;
+  const opts = ['ready','running','blocked','stale','done','error','killed'];
+  cell.innerHTML = `<select class="edit-inline-select" id="inlineStatusSelect">${opts.map(s => `<option value="${s}"${s===current?' selected':''}>${S_LABEL[s]||s}</option>`).join('')}</select> <button class="edit-save-btn" onclick="saveTaskStatus()"><i class="bi bi-check"></i></button> <button class="edit-cancel-btn" onclick="cancelTaskEdit('modalStatusCell')">Huỷ</button>`;
+}
+
+async function saveTaskStatus() {
+  const sel = document.getElementById('inlineStatusSelect');
+  if (!sel) return;
+  const id = window._taskOutputData?.taskId;
+  if (!id) return;
+  try {
+    const r = await fetch(`/api/task/${id}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({status: sel.value})
+    });
+    const d = await r.json();
+    if (d.ok) { toast(d.message, 'success'); openTaskDetail(id); }
+    else { toast(d.message, 'danger'); }
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+
+// === Inline Edit Task Output (in modal) ===
+function editTaskOutput(current) {
+  const pane = document.getElementById('pane-output');
+  if (!pane) return;
+  const text = current || '';
+  pane.innerHTML = `<textarea class="form-control" id="inlineOutputText" rows="10" style="font-family:var(--font-mono);font-size:.78rem;background:var(--bg2);border-color:var(--border);color:var(--text);resize:vertical">${h(text).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')}</textarea><div style="margin-top:6px;display:flex;gap:6px"><button class="edit-save-btn" onclick="saveTaskOutput()"><i class="bi bi-check"></i> Lưu</button><button class="edit-cancel-btn" onclick="cancelEditOutput()">Huỷ</button></div>`;
+}
+
+async function saveTaskOutput() {
+  const ta = document.getElementById('inlineOutputText');
+  if (!ta) return;
+  const id = window._taskOutputData?.taskId;
+  if (!id) return;
+  try {
+    const r = await fetch(`/api/task/${id}/output`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({output: ta.value})
+    });
+    const d = await r.json();
+    if (d.ok) { toast(d.message, 'success'); openTaskDetail(id); }
+    else { toast(d.message, 'danger'); }
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+
+function cancelEditOutput() {
+  const id = window._taskOutputData?.taskId;
+  if (id) openTaskDetail(id);
+}
+
+function cancelTaskEdit(cellId) {
+  const id = window._taskOutputData?.taskId;
+  if (id) openTaskDetail(id);
+}
+
+// === Workers ===
+async function loadWorkers() {
+  try {
+    const r = await fetch('/api/workers');
+    const data = await r.json();
+    renderWorkers(data);
+    document.getElementById('workerRefreshLabel').textContent = new Date().toLocaleTimeString('vi-VN');
+  } catch(e) { document.getElementById('workerTable').innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.error+'Lỗi: '+e.message+'</td></tr>'; }
+}
+
+function renderWorkers(data) {
+  const grid = document.getElementById('workerGrid');
+  const table = document.getElementById('workerTable');
+
+  if (!data || !data.length) {
+    grid.innerHTML = '<div class="empty-state" style="padding:2rem">'+EMPTY_ICONS.noData+'Không có worker nào</div>';
+    table.innerHTML = '<tr><td colspan="6" class="empty-state">Không có dữ liệu</td></tr>';
+    return;
+  }
+
+  grid.innerHTML = data.map((w, i) => `
+    <div class="worker-card" style="animation-delay:${i*0.05}s">
+      <div class="wc-head">
+        <span class="worker-dot ${w.status}"></span>
+        <span class="wc-name">${avatar(w.profile,'md')} ${h(w.profile)}</span>
+      </div>
+      <div class="wc-row"><span>PID</span><strong>${h(w.pid,'—')}</strong></div>
+      <div class="wc-row"><span>Trạng thái</span><strong style="color:${w.status==='running'?'var(--green)':'var(--text3)'}">${w.status==='running'?'Đang chạy':'Ngoại tuyến'}</strong></div>
+      <div class="wc-row"><span>Task hiện tại</span><strong>${w.current_task ? w.current_task.title.substring(0,28)+(w.current_task.title.length>28?'...':'') : '—'}</strong></div>
+      <div class="wc-row"><span>Tổng task</span><strong>${w.task_count}</strong></div>
+      <div class="wc-row"><span>Hoạt động</span><strong style="font-size:.65rem">${fmtRelative(w.last_heartbeat||w.started_at)}</strong></div>
+    </div>
+  `).join('');
+
+  table.innerHTML = data.map(w => `
+    <tr>
+      <td>${avatar(w.profile,'sm')} ${h(w.profile)}</td>
+      <td><code style="font-size:.72rem">${h(w.pid,'—')}</code></td>
+      <td>${w.status==='running' ? badge('running') : '<span class="badge-dot" style="background:var(--text3)1a;color:var(--text3);border:1px solid var(--text3)33"><span class="status-dot" style="background:var(--text3)"></span>Ngoại tuyến</span>'}</td>
+      <td style="font-size:.75rem">${w.current_task ? `<a href="#" onclick="openTaskDetail('${w.current_task.id}');return false" class="task-link">${h(w.current_task.title).substring(0,40)}</a>` : '<span style="color:var(--text3)">—</span>'}</td>
+      <td>${w.task_count}</td>
+      <td style="font-size:.7rem;color:var(--text2)" title="${fmtTime(w.last_heartbeat||w.started_at)}">${fmtRelative(w.last_heartbeat||w.started_at)}</td>
+    </tr>
+  `).join('');
+}
+
+// === Files ===
+async function loadFiles() {
+  try {
+    const r = await fetch('/api/files');
+    const data = await r.json();
+    renderFiles(data);
+    document.getElementById('fileRefreshLabel').textContent = new Date().toLocaleTimeString('vi-VN');
+  } catch(e) { document.getElementById('fileTable').innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.error+'Lỗi: '+e.message+'</td></tr>'; }
+}
+
+function renderFiles(data) {
+  const el = document.getElementById('fileTable');
+  if (!data || !data.length) {
+    el.innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.noData+'Không có file .md nào</td></tr>';
+    return;
+  }
+  el.innerHTML = data.map((f, i) => {
+    const sizeStr = f.size < 1024 ? f.size+'B' : f.size < 1048576 ? (f.size/1024).toFixed(1)+'KB' : (f.size/1048576).toFixed(1)+'MB';
+    return `<tr>
+      <td><span class="row-idx">${i+1}</span></td>
+      <td><strong style="font-size:.78rem">${h(f.name)}</strong></td>
+      <td><span class="file-path" title="${h(f.path)}">${h(f.path).substring(0,50)+(f.path.length>50?'...':'')}</span></td>
+      <td><span class="file-size">${sizeStr}</span></td>
+      <td style="font-size:.7rem;color:var(--text2)" title="${fmtTime(f.modified*1000)}">${fmtRelative(f.modified*1000)}</td>
+      <td><button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="openFilePreview(${i})"><i class="bi bi-eye"></i></button></td>
+    </tr>`;
+  }).join('');
+  window._fileData = data;
+}
+
+function openFilePreview(idx) {
+  const data = window._fileData;
+  if (!data || !data[idx]) return;
+  const f = data[idx];
+  const raw = f.preview || '';
+  const sizeStr = f.size < 1024 ? f.size+'B' : f.size < 1048576 ? (f.size/1024).toFixed(1)+'KB' : (f.size/1048576).toFixed(1)+'MB';
+  const html = `<div class="modal fade file-preview-modal" id="filePreviewModal" tabindex="-1"><div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title"><i class="bi bi-file-earmark-text me-1"></i>${h(f.name)}</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">
+      <div class="meta-chips" style="margin-bottom:.75rem">
+        <span class="meta-chip"><i class="bi bi-folder"></i> <strong>${h(f.path)}</strong></span>
+        <span class="meta-chip-sep"></span>
+        <span class="meta-chip"><i class="bi bi-file-earmark"></i> <strong>${sizeStr}</strong></span>
+      </div>
+      <div class="output-toolbar">
+        <span class="toolbar-btn active" id="fileViewRendered" onclick="toggleFileView('rendered');return false"><i class="bi bi-eye"></i> Hiển thị</span>
+        <span class="toolbar-btn" id="fileViewRaw" onclick="toggleFileView('raw');return false"><i class="bi bi-braces"></i> Raw</span>
+        <span class="toolbar-sep"></span>
+        <span class="toolbar-btn" onclick="copyFileContent()" title="Ctrl+C"><i class="bi bi-clipboard"></i> Copy</span>
+      </div>
+      <div class="output-block" id="fileBlockContent">${renderMd(raw)}</div>
+      <pre class="output-raw" id="fileRawContent" style="display:none">${h(raw)}</pre>
+    </div>
+  </div></div></div>`;
+  const existing = document.getElementById('filePreviewModal');
+  if (existing) existing.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+  window._fileRawContent = raw;
+  var modalEl = document.getElementById('filePreviewModal');
+  var modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+  modal.show();
+  modalEl.addEventListener('hidden.bs.modal', function(){ this.remove(); });
+}
+
+function toggleFileView(mode) {
+  var rendered = document.getElementById('fileBlockContent');
+  var raw = document.getElementById('fileRawContent');
+  var btnR = document.getElementById('fileViewRendered');
+  var btnRaw = document.getElementById('fileViewRaw');
+  if (!rendered || !raw) return;
+  if (mode === 'rendered') {
+    rendered.style.display = ''; raw.style.display = 'none';
+    btnR.classList.add('active'); btnRaw.classList.remove('active');
+  } else {
+    rendered.style.display = 'none'; raw.style.display = '';
+    btnR.classList.remove('active'); btnRaw.classList.add('active');
+  }
+}
+
+async function copyFileContent() {
+  var text = window._fileRawContent || '';
+  if (!text) { toast('Không có nội dung để copy', 'warning'); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Đã copy vào clipboard', 'success');
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+
+// === Task Actions ===
+async function claimTask(id) {
+  if (!confirm(`Claim task ${id.substring(0,10)}?`)) return;
+  try {
+    const r = await fetch(`/api/task/${id}/claim`, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) { toast(d.message, 'success'); loadDashboard(); openTaskDetail(id); }
+    else { toast(d.message, 'warning'); }
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+async function enqueueTask(id) {
+  if (!confirm(`Enqueue task ${id.substring(0,10)}?`)) return;
+  try {
+    const r = await fetch(`/api/task/${id}/enqueue`, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) { toast(d.message, 'success'); loadDashboard(); openTaskDetail(id); }
+    else { toast(d.message, 'warning'); }
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+async function completeTask(id) {
+  if (!confirm(`Complete task ${id.substring(0,10)}?`)) return;
+  try {
+    const r = await fetch(`/api/task/${id}/complete`, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) { toast(d.message, 'success'); loadDashboard(); openTaskDetail(id); }
+    else { toast(d.message, 'warning'); }
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+
+// === Cron Toggle ===
+async function toggleCron(name) {
+  try {
+    const r = await fetch(`/api/cron/${encodeURIComponent(name)}/toggle`, {method:'POST'});
+    const d = await r.json();
+    toast(d.message, 'success');
+    loadDashboard();
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+}
+
+// === Export ===
+function exportTasks(format) {
+  window.open(`/api/export/tasks?format=${format}`, '_blank');
+}
+
+// === Analytics ===
+async function loadAnalytics() {
+  try {
+    const r = await fetch('/api/analytics');
+    const d = await r.json();
+    renderAnalytics(d);
+  } catch(e) { /* silent */ }
+}
+function renderAnalytics(d) {
+  const el = document.getElementById('analyticsRow');
+  if (!el) return;
+  const healthColor = d.health>=70?'var(--green)':d.health>=40?'var(--yellow)':'var(--red)';
+  el.innerHTML = `
+    <div class="analytics-card">
+      <div class="health-ring" style="background:conic-gradient(${healthColor} ${d.health*3.6}deg, var(--surface3) 0)">${d.health}</div>
+      <div>
+        <div class="analytics-mini-label">Health Score</div>
+        <div class="health-bar-wrap"><div class="health-bar-fill" style="width:${d.health}%;background:${healthColor}"></div></div>
+      </div>
+    </div>
+    <div class="analytics-card">
+      <div class="health-ring" style="background:conic-gradient(var(--green) ${d.completion_rate*3.6}deg, var(--surface3) 0)">${d.completion_rate}%</div>
+      <div>
+        <div class="analytics-mini-label">Hoàn thành</div>
+        <div class="analytics-mini-val" style="color:var(--green)">${d.done}<small style="font-size:.65rem;font-weight:400">/${d.total}</small></div>
+      </div>
+    </div>
+    <div class="analytics-card">
+      <div>
+        <div class="analytics-mini-val" style="color:var(--red)">${d.stale}</div>
+        <div class="analytics-mini-label">Treo</div>
+        <div class="analytics-mini-val" style="color:var(--yellow);margin-top:4px">${d.running}</div>
+        <div class="analytics-mini-label">Đang chạy</div>
+      </div>
+    </div>`;
+}
+
+// === Filter ===
+window._taskFilter = 'all';
+function setTaskFilter(val) {
+  window._taskFilter = val;
+  document.querySelectorAll('#taskFilterBar .filter-chip').forEach(c => c.classList.remove('active'));
+  const activeChip = document.querySelector(`#taskFilterBar .filter-chip[onclick*="${val}"]`);
+  if (activeChip) activeChip.classList.add('active');
+  else document.getElementById('filterAll').classList.add('active');
+  loadDashboard();
+}
+
+// === Global Search ===
+let searchTimeout = null;
+document.getElementById('searchInput').addEventListener('input', function() {
+  const q = this.value.trim();
+  if (q.length < 2) { document.getElementById('searchDropdown').classList.remove('show'); return; }
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => performSearch(q), 300);
+});
+document.getElementById('searchInput').addEventListener('blur', function() {
+  setTimeout(() => { document.getElementById('searchDropdown').classList.remove('show'); }, 200);
+});
+document.getElementById('searchInput').addEventListener('focus', function() {
+  const q = this.value.trim();
+  if (q.length >= 2) performSearch(q);
+});
+
+async function performSearch(q) {
+  // Also refresh kanban/outputs if active (replaces old searchInput listener)
+  if (document.querySelector('#tab-kanban.active')) loadDashboard();
+  if (document.querySelector('#tab-outputs.active')) loadOutputs();
+  try {
+    const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const d = await r.json();
+    const dd = document.getElementById('searchDropdown');
+    let html = '';
+    if (d.tasks && d.tasks.length) {
+      html += '<div class="search-result-group">Tasks ('+d.tasks.length+')</div>';
+      html += d.tasks.map(t => `<div class="search-result-item" onclick="openTaskDetail('${t.id}');document.getElementById('searchDropdown').classList.remove('show');document.getElementById('searchInput').value=''">${badge(t.status)} <span>${h(t.title).substring(0,50)}</span></div>`).join('');
+    }
+    if (d.files && d.files.length) {
+      html += '<div class="search-result-group">Files ('+d.files.length+')</div>';
+      html += d.files.map(f => `<div class="search-result-item" onclick="document.getElementById('searchDropdown').classList.remove('show');bootstrap.Tab.getInstance(document.getElementById('tab-files'))||(new bootstrap.Tab(document.getElementById('tab-files'))).show()"><i class="bi bi-file-earmark-text" style="color:var(--accent)"></i> <span>${h(f.name)}</span></div>`).join('');
+    }
+    if (d.workers && d.workers.length) {
+      html += '<div class="search-result-group">Workers ('+d.workers.length+')</div>';
+      html += d.workers.map(w => `<div class="search-result-item" onclick="document.getElementById('searchDropdown').classList.remove('show');bootstrap.Tab.getInstance(document.getElementById('tab-workers'))||(new bootstrap.Tab(document.getElementById('tab-workers'))).show()"><i class="bi bi-robot" style="color:var(--green)"></i> <span>${h(w.profile)}</span></div>`).join('');
+    }
+    if (!html) html = '<div class="search-no-result">Không tìm thấy kết quả</div>';
+    dd.innerHTML = html;
+    dd.classList.add('show');
+  } catch(e) {}
+}
+
+// === Update loadDashboard to call analytics ===
+const _origLoadDashboard = loadDashboard;
+loadDashboard = async function() {
+  await _origLoadDashboard();
+  await loadAnalytics();
+};
+
 setInterval(() => { initTooltips(); }, 2000);
 initTooltips();
 loadDashboard();
@@ -2366,7 +3448,8 @@ loadDashboard();
 </html>"""
 
 if __name__ == '__main__':
+    port = int(os.environ.get('DASHBOARD_PORT', 8093))
     print(f"[cron] fallback path: {CRON_JSON}")
     print(f"[board] filter: {BOARD}")
-    print(f"Monitoring Dashboard @ http://localhost:8093")
-    app.run(host='0.0.0.0', port=8093, debug=False)
+    print(f"Monitoring Dashboard @ http://localhost:{port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
