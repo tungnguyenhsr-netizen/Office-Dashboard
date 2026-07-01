@@ -73,7 +73,11 @@ def db_conn(readonly=True):
         conn.execute("PRAGMA query_only = ON")
     return conn
 
+DB_EXISTS = os.path.exists(DB)
+
 def fetch_tasks_summary():
+    if not DB_EXISTS:
+        return {'total': 0, 'done_count': 0, 'active_count': 0, 'stale_count': 0, 'running_workers': 0, 'board_summary': [], 'stale_running': []}
     conn = db_conn()
     c = conn.cursor()
 
@@ -646,6 +650,7 @@ def api_update_task_output(task_id):
 
 @app.route('/api/workers')
 def api_workers():
+    if not DB_EXISTS: return jsonify([])
     conn = db_conn()
     c = conn.cursor()
     rows = c.execute("""
@@ -866,6 +871,9 @@ def api_export_tasks():
 
 @app.route('/api/analytics')
 def api_analytics():
+    if not DB_EXISTS:
+        return jsonify({'total': 0, 'done': 0, 'stale': 0, 'running': 0, 'error': 0,
+            'completion_rate': 0, 'recent_completed': 0, 'avg_failures': 0, 'health': 0, 'db_missing': True})
     conn = db_conn()
     c = conn.cursor()
     total = c.execute("SELECT COUNT(1) FROM tasks").fetchone()[0]
