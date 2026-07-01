@@ -36,27 +36,19 @@ def do_logout():
     session.pop('user', None)
     return redirect('/')
 
+from app.services.vault import read_vault_config, write_vault_config
+from app.services.system import kill_by_pid, get_system_health
 from app.services.database import (
-    DB, CRON_JSON, HERMES_HOME, TZ,
     db_conn, DB_EXISTS,
     fetch_tasks_summary, fetch_task_detail, fetch_task_output, fetch_crons,
     _get_file_index,
-    _FILE_INDEX, _FILE_INDEX_TIME,
+    CRON_JSON, HERMES_HOME,
 )
 
 BOARD = "%"
 VAULT_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vault-config.json')
 
-def _read_vault_config():
-    if os.path.exists(VAULT_CONFIG_FILE):
-        try:
-            with open(VAULT_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f).get('vault_dir', '')
-        except:
-            pass
-    return ''
-
-VAULT_ROOT = os.environ.get('HERMES_VAULT_DIR', _read_vault_config())
+VAULT_ROOT = os.environ.get('HERMES_VAULT_DIR', read_vault_config())
 import app.services.database as _db
 _db.VAULT_ROOT = VAULT_ROOT
 
@@ -143,25 +135,6 @@ def api_task_outputs():
     conn.close()
     return jsonify(result)
 
-def _kill_by_pid(pid):
-    if not pid or pid == 0:
-        return False, 'không có PID'
-    try:
-        if sys.platform == 'win32':
-            r = subprocess.run(['taskkill', '/F', '/PID', str(pid)], capture_output=True, text=True, timeout=10)
-            if r.returncode == 0:
-                return True, 'đã kill'
-            return False, r.stderr.strip() or r.stdout.strip() or 'taskkill thất bại'
-        else:
-            os.kill(pid, signal.SIGTERM)
-            return True, 'đã kill'
-    except subprocess.TimeoutExpired:
-        return False, 'timeout'
-    except ProcessLookupError:
-        return False, 'process đã chết trước đó'
-    except Exception as e:
-        return False, str(e)
-
 def _update_task_killed(task_id):
     try:
         conn = db_conn(readonly=False)
@@ -204,7 +177,7 @@ def api_task_kill(task_id):
     """, (task_id,)).fetchone()
     conn.close()
     pid = int(row['worker_pid']) if row and row['worker_pid'] else None
-    ok, msg = _kill_by_pid(pid)
+    ok, msg = kill_by_pid(pid)
     db_ok = _update_task_killed(task_id)
     return jsonify({'ok': ok, 'task_id': task_id, 'pid': pid, 'message': f'Kill {task_id}: {msg}', 'db_updated': db_ok})
 
@@ -338,7 +311,7 @@ def api_bulk_kill():
             ORDER BY started_at DESC LIMIT 1
         """, (tid,)).fetchone()
         pid = int(row['worker_pid']) if row and row['worker_pid'] else None
-        ok, msg = _kill_by_pid(pid)
+        ok, msg = kill_by_pid(pid)
         db_ok = _update_task_killed(tid)
         results.append({'id': tid, 'ok': ok, 'pid': pid, 'msg': msg, 'db_updated': db_ok})
     conn.close()
@@ -527,15 +500,15 @@ def api_get_config():
 
 @app.route('/api/config/vault', methods=['POST'])
 def api_set_vault():
-    global VAULT_ROOT, _FILE_INDEX, _FILE_INDEX_TIME
+    global VAULT_ROOT
     data = request.json or {}
     vault_dir = data.get('vault_dir', '').strip()
     try:
-        with open(VAULT_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump({'vault_dir': vault_dir}, f, indent=2, ensure_ascii=False)
+        write_vault_config(vault_dir)
         VAULT_ROOT = vault_dir
-        _FILE_INDEX = []
-        _FILE_INDEX_TIME = 0
+        _db.VAULT_ROOT = vault_dir
+        _db._FILE_INDEX.clear()
+        _db._FILE_INDEX_TIME = 0
         return jsonify({'ok': True, 'vault_dir': vault_dir, 'message': 'Đã lưu cấu hình vault'})
     except Exception as e:
         return jsonify({'ok': False, 'message': str(e)}), 500
@@ -596,37 +569,7 @@ def api_conversation_detail(profile, session_id):
 
 @app.route('/api/system-health')
 def api_system_health():
-    try:
-        import psutil
-        cpu = {'percent': psutil.cpu_percent(interval=0.5), 'count': psutil.cpu_count()}
-        mem = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        uptime_sec = int(time.time() - psutil.boot_time())
-    except Exception:
-        cpu = {'percent': 0, 'count': 0}
-        mem = {'total': 0, 'used': 0, 'percent': 0}
-        disk = {'total': 0, 'used': 0, 'percent': 0}
-        uptime_sec = 0
-    # Check hermes processes
-    hermes = {'dispatcher_running': False, 'dispatcher_pid': None, 'orchestrator_running': False}
-    try:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                cmd = ' '.join(proc.info.get('cmdline') or [])
-                if 'dispatcher' in cmd.lower():
-                    hermes['dispatcher_running'] = True
-                    hermes['dispatcher_pid'] = proc.info['pid']
-                if 'orchestrator' in cmd.lower():
-                    hermes['orchestrator_running'] = True
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-    except Exception:
-        pass
-    return jsonify({
-        'cpu': cpu, 'memory': {'total': mem.total, 'used': mem.used, 'percent': mem.percent},
-        'disk': {'total': disk.total, 'used': disk.used, 'percent': disk.percent},
-        'uptime': uptime_sec, 'hermes': hermes
-    })
+    return jsonify(get_system_health())
 
 @app.route('/api/cron/<name>/toggle', methods=['POST'])
 def api_cron_toggle(name):
