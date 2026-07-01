@@ -170,7 +170,18 @@ def fetch_task_detail(task_id):
     }
 
 HERMES_HOME = os.path.expandvars(r'%LOCALAPPDATA%\hermes')
-VAULT_ROOT = os.environ.get('HERMES_VAULT_DIR', '')
+VAULT_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vault-config.json')
+
+def _read_vault_config():
+    if os.path.exists(VAULT_CONFIG_FILE):
+        try:
+            with open(VAULT_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f).get('vault_dir', '')
+        except:
+            pass
+    return ''
+
+VAULT_ROOT = os.environ.get('HERMES_VAULT_DIR', _read_vault_config())
 
 def fetch_task_output(task_id):
     conn = db_conn()
@@ -697,6 +708,25 @@ def api_files():
                     pass
     results.sort(key=lambda x: x['modified'], reverse=True)
     return jsonify(results)
+
+@app.route('/api/config', methods=['GET'])
+def api_get_config():
+    return jsonify({'vault_dir': VAULT_ROOT})
+
+@app.route('/api/config/vault', methods=['POST'])
+def api_set_vault():
+    global VAULT_ROOT, _FILE_INDEX, _FILE_INDEX_TIME
+    data = request.json or {}
+    vault_dir = data.get('vault_dir', '').strip()
+    try:
+        with open(VAULT_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'vault_dir': vault_dir}, f, indent=2, ensure_ascii=False)
+        VAULT_ROOT = vault_dir
+        _FILE_INDEX = []
+        _FILE_INDEX_TIME = 0
+        return jsonify({'ok': True, 'vault_dir': vault_dir, 'message': 'Đã lưu cấu hình vault'})
+    except Exception as e:
+        return jsonify({'ok': False, 'message': str(e)}), 500
 
 @app.route('/api/conversations')
 def api_conversations():
@@ -2789,7 +2819,10 @@ a.task-link:hover {
       <div class="tab-pane fade" id="pane-files">
         <div class="d-flex justify-content-between align-items-center mb-2">
           <div class="sec-title m-0"><i class="bi bi-folder"></i>File Viewer</div>
-          <span><span class="refresh-dot" id="fileRefreshDot"></span><small class="text-secondary" style="font-size:.7rem" id="fileRefreshLabel"></small></span>
+          <span><span class="refresh-dot" id="fileRefreshDot"></span><small class="text-secondary" style="font-size:.7rem" id="fileRefreshLabel"></small> <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="openSettings()" style="font-size:.65rem"><i class="bi bi-gear"></i></button></span>
+        </div>
+        <div id="vaultConfigPrompt" style="display:none;margin-bottom:.75rem;padding:.6rem .8rem;background:var(--yellow-subtle);border:1px solid var(--yellow);border-radius:var(--radius-sm);font-size:.72rem;color:var(--yellow)">
+          <i class="bi bi-info-circle"></i> Vault chưa được cấu hình. <a href="#" onclick="openSettings();return false" style="color:var(--accent);text-decoration:underline">Cấu hình ngay</a> để xem file .md.
         </div>
         <div class="table-wrap"><table class="table"><thead><tr><th style="width:36px">STT</th><th>Tên file</th><th>Đường dẫn</th><th style="width:80px">Kích thước</th><th style="width:120px">Sửa đổi</th><th style="width:80px"></th></tr></thead><tbody id="fileTable"></tbody></table></div>
       </div>
@@ -2860,6 +2893,21 @@ a.task-link:hover {
 <div class="modal fade" id="conversationModal" tabindex="-1"><div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable"><div class="modal-content">
   <div class="modal-header"><h5 class="modal-title" id="convModalTitle"></h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
   <div class="modal-body" id="convModalBody"></div>
+</div></div></div>
+
+<div class="modal fade" id="settingsModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+  <div class="modal-header"><h5 class="modal-title"><i class="bi bi-gear me-1"></i>Cấu hình</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body">
+    <div class="mb-3">
+      <label class="form-label" style="font-size:.75rem;color:var(--text2)">Đường dẫn Obsidian Vault</label>
+      <input type="text" class="form-control" id="settingsVaultDir" placeholder="C:\Users\...\Documents\Vault" style="background:var(--bg2);border-color:var(--border);color:var(--text);font-size:.82rem">
+      <small style="font-size:.65rem;color:var(--text3)">Để trống nếu không dùng vault. Cấu trúc: {dir}/Efforts/*.md</small>
+    </div>
+  </div>
+  <div class="modal-footer" style="border-color:var(--border-light);padding:.75rem 1.25rem">
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Huỷ</button>
+    <button class="btn btn-sm btn-primary" id="saveSettingsBtn" onclick="saveVaultSettings()"><i class="bi bi-check-lg me-1"></i>Lưu</button>
+  </div>
 </div></div></div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -3895,6 +3943,15 @@ async function loadFiles() {
 
 function renderFiles(data) {
   const el = document.getElementById('fileTable');
+  const prompt = document.getElementById('vaultConfigPrompt');
+  // Check vault config
+  fetch('/api/config').then(r => r.json()).then(c => {
+    if (c.vault_dir) {
+      if (prompt) prompt.style.display = 'none';
+    } else {
+      if (prompt) prompt.style.display = 'block';
+    }
+  }).catch(() => {});
   if (!data || !data.length) {
     el.innerHTML = '<tr><td colspan="6" class="empty-state">'+EMPTY_ICONS.noData+_i('empty_no_files','Không có file .md nào')+'</td></tr>';
     return;
@@ -3911,6 +3968,32 @@ function renderFiles(data) {
     </tr>`;
   }).join('');
   window._fileData = data;
+}
+
+// === Settings ===
+function openSettings() {
+  fetch('/api/config').then(r => r.json()).then(c => {
+    document.getElementById('settingsVaultDir').value = c.vault_dir || '';
+    new bootstrap.Modal(document.getElementById('settingsModal')).show();
+  }).catch(() => {
+    new bootstrap.Modal(document.getElementById('settingsModal')).show();
+  });
+}
+
+async function saveVaultSettings() {
+  const dir = document.getElementById('settingsVaultDir').value.trim();
+  const btn = document.getElementById('saveSettingsBtn');
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Đang lưu...';
+  try {
+    const r = await fetch('/api/config/vault', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({vault_dir: dir})});
+    const d = await r.json();
+    toast(d.message, d.ok ? 'success' : 'danger');
+    if (d.ok) {
+      bootstrap.Modal.getInstance(document.getElementById('settingsModal')).hide();
+      loadFiles();
+    }
+  } catch(e) { toast('Lỗi: '+e, 'danger'); }
+  btn.disabled = false; btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Lưu';
 }
 
 function openFilePreview(idx) {

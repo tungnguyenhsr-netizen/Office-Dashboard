@@ -7,3 +7,4 @@ audit-*.md
 .env
 *.db
 state/
+vault-config.json
