@@ -92,6 +92,13 @@ plans/             → Architecture documentation
 - Shows: profile, title, model, message count, tokens, cost
 - **Chat modal**: Role-based bubbles (user/agent), reasoning collapsible, markdown rendering
 
+### Task Management
+- **Create task**: `+` button in header → modal form with title, assignee (autocomplete from workers), description
+- **Update status**: Pencil icon next to status badge → inline dropdown (ready/running/blocked/stale/done/error/killed)
+- **Update output**: Edit button in output toolbar → inline markdown textarea with save/cancel
+- **Task notes**: Notes tab in detail modal → save to `body` field
+- **Bulk actions**: Checkbox multi-select → Kill selected / Delete selected
+
 ### Task Detail Modal
 - **Metadata chips**: Status (editable inline), ID, PID, error count
 - **Action bar**: Claim, Enqueue, Complete, Retry, Delete
