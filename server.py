@@ -2554,6 +2554,7 @@ a.task-link:hover {
         <button class="btn btn-sm btn-outline-secondary" onclick="exportTasks('json')" title="Xuất JSON" style="font-size:.65rem"><i class="bi bi-download me-1"></i>JSON</button>
       </span>
       <button class="icon-btn" id="themeToggle" onclick="toggleTheme()" title="Chế độ sáng/tối" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="bi bi-moon-stars"></i></button>
+      <button class="icon-btn" id="langToggle" onclick="switchLang(currentLang==='vi'?'en':'vi')" title="Language" data-bs-toggle="tooltip" data-bs-placement="bottom" style="width:auto;padding:0 8px;font-size:.68rem;font-weight:600"><i class="bi bi-translate"></i> VI</button>
     </div>
   </div>
 
@@ -2743,7 +2744,193 @@ a.task-link:hover {
 const API = '/api/dashboard';
 let cronTimer = null;
 
-const S_LABEL = {ready:'Sẵn sàng',running:'Đang chạy',stale:'Treo',blocked:'Chặn',done:'Xong',error:'Lỗi',ok:'OK',completed:'Hoàn tất',gave_up:'Bỏ',spawn_failed:'Lỗi KT',killed:'Đã kill'};
+// === i18n Language ===
+const LANG = {
+  vi: {
+    tab_system:'Hệ thống', tab_kanban:'Kanban', tab_cron:'Cron', tab_outputs:'Outputs',
+    tab_workers:'Workers', tab_files:'Files', tab_conversations:'Hội thoại',
+    subtab_stale:'Treo', subtab_all:'Tất cả', subtab_done:'Xong',
+    stat_total:'Tổng tasks', stat_done:'Đã hoàn thành', stat_stale:'Treo / Đang chạy', stat_cron:'Cron lỗi',
+    sec_title_recent:'Hoạt động gần đây', sec_title_dist:'Phân bố', sec_title_stale:'Tác vụ treo',
+    sec_title_kanban:'Kanban theo trạng thái', sec_title_cron:'Lịch trình Cron',
+    sec_title_outputs:'Kết quả tác vụ', sec_title_workers:'Worker Agents',
+    sec_title_files:'File Viewer', sec_title_conv:'Hội thoại Agent',
+    health_score:'Health Score', health_complete:'Hoàn thành', health_stale:'Treo', health_running:'Đang chạy',
+    filter_kill_sel:'Kill đã chọn', filter_del_sel:'Xoá đã chọn', filter_kill_all:'Kill all',
+    all_status:'Tất cả trạng thái', all_info:'tasks',
+    btn_create:'Tạo task mới', btn_export_csv:'CSV', btn_export_json:'JSON',
+    btn_claim:'Claim', btn_enqueue:'Enqueue', btn_complete:'Complete', btn_retry:'Retry', btn_delete:'Delete',
+    btn_save:'Lưu', btn_cancel:'Huỷ', btn_ok:'OK',
+    modal_output:'Output', modal_events:'Sự kiện', modal_runs:'Lần chạy', modal_notes:'Notes',
+    modal_delete_title:'Xoá task', modal_delete_warn:'Task sẽ bị xoá vĩnh viễn! Hành động này không thể hoàn tác.',
+    modal_delete_prompt:'Gõ CONFIRM để xác nhận:', modal_delete_confirm:'Gõ CONFIRM...',
+    modal_delete_btn:'Xoá vĩnh viễn', modal_delete_deleting:'Đang xoá...',
+    modal_create_title:'Tạo task mới', modal_create_title_label:'Tiêu đề', modal_create_assignee:'Người phụ trách',
+    modal_create_desc:'Mô tả', modal_create_btn:'Tạo task',
+    modal_health_title:'System Health',
+    modal_conv_title:'Hội thoại',
+    toolbar_rendered:'Hiển thị', toolbar_raw:'Raw', toolbar_copy:'Copy', toolbar_edit:'Sửa', toolbar_fullscreen:'Toàn màn hình',
+    action_bar_label:'Hành động:',
+    notes_help:'Thêm ghi chú cho task này (lưu vào body field)', notes_save:'Lưu notes',
+    worker_status_run:'Đang chạy', worker_status_off:'Ngoại tuyến', worker_pid:'PID', worker_task:'Task hiện tại',
+    worker_total:'Tổng task', worker_active:'Hoạt động gần nhất',
+    conv_profile:'Profile', conv_title:'Tiêu đề', conv_model:'Model', conv_msgs:'Messages', conv_tokens:'Tokens',
+    conv_cost:'Cost', conv_time:'Thời gian',
+    file_header_stt:'STT', file_header_name:'Tên file', file_header_path:'Đường dẫn',
+    file_header_size:'Kích thước', file_header_mod:'Sửa đổi',
+    search_placeholder:'Tìm toàn bộ...', search_no_result:'Không tìm thấy kết quả',
+    search_group_tasks:'Tasks', search_group_files:'Files', search_group_workers:'Workers',
+    auto_off:'Tắt', auto_seconds:'s',
+    analytics_collapse:'Thu gọn analytics', analytics_expand:'Mở analytics',
+    theme_toggle:'Chế độ sáng/tối',
+    stale_header_id:'ID', stale_header_title:'Tiêu đề', stale_header_assignee:'Người phụ trách',
+    stale_header_pid:'PID', stale_header_age:'Age', stale_header_reason:'Lý do',
+    all_header_created:'Tạo lúc', all_header_title:'Tiêu đề', all_header_assignee:'Người phụ trách',
+    all_header_status:'Trạng thái', all_header_started:'Bắt đầu',
+    done_header_title:'Tiêu đề', done_header_assignee:'Người phụ trách', done_header_done:'Xong lúc',
+    cron_header_name:'Tên', cron_header_schedule:'Lịch', cron_header_next:'Lần chạy tới',
+    cron_header_last:'Lần cuối', cron_header_status:'Trạng thái', cron_header_error:'Lỗi', cron_header_toggle:'On/Off',
+    output_header_stt:'STT', output_header_title:'Tiêu đề', output_header_assignee:'Người phụ trách',
+    output_header_status:'Trạng thái', output_header_time:'Thời gian',
+    stale_create_header_stt:'STT', stale_create_header_title:'Tiêu đề',
+    health_cpu:'CPU', health_ram:'RAM', health_disk:'Disk', health_uptime:'Uptime',
+    health_disp:'Dispatcher', health_disp_run:'Chạy', health_disp_off:'Tắt', health_cores:'cores',
+    empty_no_tasks:'Không có tác vụ', empty_no_data:'Chưa có dữ liệu',
+    empty_no_cron:'Không có dữ liệu cron', empty_no_output:'Chưa có output',
+    empty_no_events:'Không có sự kiện', empty_no_conv:'Không có hội thoại nào',
+    empty_no_files:'Không có file .md nào', empty_no_msg:'Không có tin nhắn',
+    empty_error:'Lỗi',
+    confirm_retry:'Retry task', confirm_kill:'Kill task', confirm_claim:'Claim task',
+    confirm_enqueue:'Enqueue task', confirm_complete:'Complete task', confirm_delete:'Xoá',
+    confirm_bulk_kill:'Kill', confirm_bulk_del:'Xoá',
+    toast_copied:'Đã copy vào clipboard', toast_no_content:'Không có nội dung để copy',
+    toast_loading:'Đang tải...', toast_saved:'Đã lưu',
+    tip_create_task:'Tạo task mới', tip_refresh:'Refresh', tip_delete:'Xoá task',
+    task_workspace:'Workspace', task_status:'Status', task_assignee:'Assignee',
+    filter_label_all:'Tất cả', filter_label_title:'Tiêu đề',
+    all_table_empty:'Không có task nào', done_table_empty:'Chưa có task xong',
+  },
+  en: {
+    tab_system:'System', tab_kanban:'Kanban', tab_cron:'Cron', tab_outputs:'Outputs',
+    tab_workers:'Workers', tab_files:'Files', tab_conversations:'Conversations',
+    subtab_stale:'Stale', subtab_all:'All', subtab_done:'Done',
+    stat_total:'Total Tasks', stat_done:'Completed', stat_stale:'Stale / Running', stat_cron:'Cron Errors',
+    sec_title_recent:'Recent Activity', sec_title_dist:'Distribution', sec_title_stale:'Stale Tasks',
+    sec_title_kanban:'Kanban by Status', sec_title_cron:'Cron Schedule',
+    sec_title_outputs:'Task Outputs', sec_title_workers:'Worker Agents',
+    sec_title_files:'File Viewer', sec_title_conv:'Agent Conversations',
+    health_score:'Health Score', health_complete:'Completed', health_stale:'Stale', health_running:'Running',
+    filter_kill_sel:'Kill Selected', filter_del_sel:'Delete Selected', filter_kill_all:'Kill All',
+    all_status:'All Status', all_info:'tasks',
+    btn_create:'New Task', btn_export_csv:'CSV', btn_export_json:'JSON',
+    btn_claim:'Claim', btn_enqueue:'Enqueue', btn_complete:'Complete', btn_retry:'Retry', btn_delete:'Delete',
+    btn_save:'Save', btn_cancel:'Cancel', btn_ok:'OK',
+    modal_output:'Output', modal_events:'Events', modal_runs:'Runs', modal_notes:'Notes',
+    modal_delete_title:'Delete Task', modal_delete_warn:'This task will be permanently deleted! This action cannot be undone.',
+    modal_delete_prompt:'Type CONFIRM to proceed:', modal_delete_confirm:'Type CONFIRM...',
+    modal_delete_btn:'Delete Permanently', modal_delete_deleting:'Deleting...',
+    modal_create_title:'Create New Task', modal_create_title_label:'Title', modal_create_assignee:'Assignee',
+    modal_create_desc:'Description', modal_create_btn:'Create Task',
+    modal_health_title:'System Health',
+    modal_conv_title:'Conversation',
+    toolbar_rendered:'Rendered', toolbar_raw:'Raw', toolbar_copy:'Copy', toolbar_edit:'Edit', toolbar_fullscreen:'Fullscreen',
+    action_bar_label:'Actions:',
+    notes_help:'Add notes to this task (saved to body field)', notes_save:'Save Notes',
+    worker_status_run:'Running', worker_status_off:'Offline', worker_pid:'PID', worker_task:'Current Task',
+    worker_total:'Total Tasks', worker_active:'Last Active',
+    conv_profile:'Profile', conv_title:'Title', conv_model:'Model', conv_msgs:'Messages', conv_tokens:'Tokens',
+    conv_cost:'Cost', conv_time:'Time',
+    file_header_stt:'#', file_header_name:'Filename', file_header_path:'Path',
+    file_header_size:'Size', file_header_mod:'Modified',
+    search_placeholder:'Search everything...', search_no_result:'No results found',
+    search_group_tasks:'Tasks', search_group_files:'Files', search_group_workers:'Workers',
+    auto_off:'Off', auto_seconds:'s',
+    analytics_collapse:'Collapse analytics', analytics_expand:'Expand analytics',
+    theme_toggle:'Dark/Light Mode',
+    stale_header_id:'ID', stale_header_title:'Title', stale_header_assignee:'Assignee',
+    stale_header_pid:'PID', stale_header_age:'Age', stale_header_reason:'Reason',
+    all_header_created:'Created', all_header_title:'Title', all_header_assignee:'Assignee',
+    all_header_status:'Status', all_header_started:'Started',
+    done_header_title:'Title', done_header_assignee:'Assignee', done_header_done:'Completed',
+    cron_header_name:'Name', cron_header_schedule:'Schedule', cron_header_next:'Next Run',
+    cron_header_last:'Last Run', cron_header_status:'Status', cron_header_error:'Error', cron_header_toggle:'On/Off',
+    output_header_stt:'#', output_header_title:'Title', output_header_assignee:'Assignee',
+    output_header_status:'Status', output_header_time:'Time',
+    stale_create_header_stt:'#', stale_create_header_title:'Title',
+    health_cpu:'CPU', health_ram:'RAM', health_disk:'Disk', health_uptime:'Uptime',
+    health_disp:'Dispatcher', health_disp_run:'Running', health_disp_off:'Stopped', health_cores:'cores',
+    empty_no_tasks:'No stale tasks', empty_no_data:'No data',
+    empty_no_cron:'No cron data', empty_no_output:'No outputs',
+    empty_no_events:'No events', empty_no_conv:'No conversations',
+    empty_no_files:'No .md files', empty_no_msg:'No messages',
+    empty_error:'Error',
+    confirm_retry:'Retry task', confirm_kill:'Kill task', confirm_claim:'Claim task',
+    confirm_enqueue:'Enqueue task', confirm_complete:'Complete task', confirm_delete:'Delete',
+    confirm_bulk_kill:'Kill', confirm_bulk_del:'Delete',
+    toast_copied:'Copied to clipboard', toast_no_content:'No content to copy',
+    toast_loading:'Loading...', toast_saved:'Saved',
+    tip_create_task:'Create new task', tip_refresh:'Refresh', tip_delete:'Delete task',
+    task_workspace:'Workspace', task_status:'Status', task_assignee:'Assignee',
+    filter_label_all:'All', filter_label_title:'Title',
+    all_table_empty:'No tasks', done_table_empty:'No completed tasks',
+  }
+};
+let currentLang = localStorage.getItem('lang') || 'vi';
+function _i(key, fb) {
+  return (LANG[currentLang] || {})[key] || fb || key;
+}
+const S_LABEL = {
+  ready: _i('status_ready','Sẵn sàng'), running: _i('status_running','Đang chạy'), stale: _i('status_stale','Treo'),
+  blocked: _i('status_blocked','Chặn'), done: _i('status_done','Xong'), error: _i('status_error','Lỗi'),
+  ok: _i('status_ok','OK'), completed: _i('status_completed','Hoàn tất'), gave_up: _i('status_gaveup','Bỏ'),
+  spawn_failed: _i('status_spawn','Lỗi KT'), killed: _i('status_killed','Đã kill')
+};
+// Also add status labels to LANG dict
+(function buildStatusLabels() {
+  const viLabels = {status_ready:'Sẵn sàng', status_running:'Đang chạy', status_stale:'Treo', status_blocked:'Chặn', status_done:'Xong', status_error:'Lỗi', status_ok:'OK', status_completed:'Hoàn tất', status_gaveup:'Bỏ', status_spawn_failed:'Lỗi KT', status_killed:'Đã kill'};
+  const enLabels = {status_ready:'Ready', status_running:'Running', status_stale:'Stale', status_blocked:'Blocked', status_done:'Done', status_error:'Error', status_ok:'OK', status_completed:'Completed', status_gaveup:'Gave Up', status_spawn_failed:'Spawn Fail', status_killed:'Killed'};
+  Object.assign(LANG.vi, viLabels);
+  Object.assign(LANG.en, enLabels);
+})();
+function updateS_LABEL() {
+  const keys = ['ready','running','stale','blocked','done','error','ok','completed','gave_up','spawn_failed','killed'];
+  const viVals = ['Sẵn sàng','Đang chạy','Treo','Chặn','Xong','Lỗi','OK','Hoàn tất','Bỏ','Lỗi KT','Đã kill'];
+  const enVals = ['Ready','Running','Stale','Blocked','Done','Error','OK','Completed','Gave Up','Spawn Fail','Killed'];
+  const vals = currentLang === 'en' ? enVals : viVals;
+  keys.forEach((k,i) => S_LABEL[k] = vals[i]);
+}
+function switchLang(lang) {
+  localStorage.setItem('lang', lang);
+  location.reload();
+}
+function updateLangToggleUI() {
+  const el = document.getElementById('langToggle');
+  if (!el) return;
+  el.innerHTML = currentLang === 'vi' ? '<i class="bi bi-translate"></i> VI' : '<i class="bi bi-translate"></i> EN';
+}
+function applyLangToStatic() {
+  // Update tab names
+  const tabIds = {system:'tab_system',kanban:'tab_kanban',cron:'tab_cron',outputs:'tab_outputs',workers:'tab_workers',files:'tab_files',conversations:'tab_conversations'};
+  Object.entries(tabIds).forEach(([k,v]) => {
+    const el = document.getElementById('tab-'+k);
+    if (el) { const icon = el.querySelector('i'); el.innerText = _i(v, LANG.vi[v]); if(icon) el.prepend(icon); }
+  });
+  // Update sub-tab names
+  const subIds = {stale:'subtab_stale',all:'subtab_all',done:'subtab_done'};
+  Object.entries(subIds).forEach(([k,v]) => {
+    const el = document.getElementById('subtab-'+k);
+    if (el) { const icon = el.querySelector('i'); el.innerText = _i(v, LANG.vi[v]); if(icon) el.prepend(icon); }
+  });
+  // Update analytics toggle
+  const at = document.getElementById('analyticsToggle');
+  if (at && window._analyticsVisible !== undefined) {
+    const vis = window._analyticsVisible !== false;
+    at.innerHTML = `<i class="bi ${vis?'bi-chevron-up':'bi-chevron-down'}"></i> ${vis ? _i('analytics_collapse','Thu gọn analytics') : _i('analytics_expand','Mở analytics')}`;
+  }
+  // Update lang toggle
+  updateLangToggleUI();
+}
+
 const S_COLOR = {ready:'#4ade80',running:'#fbbf24',stale:'#f87171',blocked:'#6b7280',done:'#6b7280',error:'#f87171',ok:'#4ade80',completed:'#38bdf8',gave_up:'#a78bfa',spawn_failed:'#f87171',killed:'#6b7280'};
 
 const AVATAR_COLORS = ['var(--av-1)','var(--av-2)','var(--av-3)','var(--av-4)','var(--av-5)','var(--av-6)','var(--av-7)','var(--av-8)'];
@@ -2905,10 +3092,10 @@ async function loadDashboard() {
     const doneTotal = t.done_count || 0;
     const pct = t.total ? Math.round(doneTotal/t.total*100) : 0;
     const cards = [
-      {label:'Tổng tasks', value:t.total, sub:pct+'% hoàn thành', icon:'bi-list-task', color:'#818cf8'},
-      {label:'Đã hoàn thành', value:doneTotal, sub:activeTasks+' đang hoạt động', icon:'bi-check-circle', color:'#4ade80'},
-      {label:'Treo / Đang chạy', value:t.stale_count+' / '+t.running_workers, icon:'bi-exclamation-triangle', color:t.stale_count>0?'#f87171':'#fbbf24'},
-      {label:'Cron lỗi', value:data.cron_errors, sub:'/'+crons.length+' jobs', icon:'bi-x-circle', color:data.cron_errors>0?'#f87171':'#7878aa'},
+      {label:_i('stat_total','Tổng tasks'), value:t.total, sub:pct+'% '+_i('health_complete','hoàn thành'), icon:'bi-list-task', color:'#818cf8'},
+      {label:_i('stat_done','Đã hoàn thành'), value:doneTotal, sub:activeTasks+' '+_i('health_running','đang hoạt động'), icon:'bi-check-circle', color:'#4ade80'},
+      {label:_i('stat_stale','Treo / Đang chạy'), value:t.stale_count+' / '+t.running_workers, icon:'bi-exclamation-triangle', color:t.stale_count>0?'#f87171':'#fbbf24'},
+      {label:_i('stat_cron','Cron lỗi'), value:data.cron_errors, sub:'/'+crons.length+' jobs', icon:'bi-x-circle', color:data.cron_errors>0?'#f87171':'#7878aa'},
     ];
     document.getElementById('statCards').innerHTML = cards.map(c => `
       <div class="stat-card" style="cursor:pointer" onclick="toggleAnalytics()">
@@ -3985,6 +4172,7 @@ setInterval(() => { initTooltips(); }, 2000);
 initTooltips();
 loadDashboard();
 loadSystemHealth();
+applyLangToStatic();
 </script>
 </body>
 </html>"""
