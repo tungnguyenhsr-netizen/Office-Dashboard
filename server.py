@@ -2597,7 +2597,7 @@ a.task-link:hover {
           <div class="d-flex gap-2">
             <button class="btn btn-sm btn-outline-warning d-none" id="killSelectedBtn" onclick="killSelected()"><i class="bi bi-x-lg me-1"></i>Kill đã chọn (<span id="selectedCount">0</span>)</button>
             <button class="btn btn-sm btn-outline-danger d-none" id="deleteSelectedBtn" onclick="deleteSelected()"><i class="bi bi-trash3 me-1"></i>Xoá đã chọn (<span id="deleteSelectedCount">0</span>)</button>
-            <button class="btn btn-sm btn-outline-danger" onclick="killAllDead()"><i class="bi bi-trash3 me-1"></i>${_i('filter_kill_all','Kill all')}</button>
+            <button class="btn btn-sm btn-outline-danger" id="killAllBtn" onclick="killAllDead()"><i class="bi bi-trash3 me-1"></i>Kill all</button>
           </div>
         </div>
         <div>
@@ -2711,7 +2711,7 @@ a.task-link:hover {
     </div>
   </div>
   <div class="modal-footer" style="border-color:var(--border-light);padding:.75rem 1.25rem">
-    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">${_i('btn_cancel','Huỷ')}</button>
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Huỷ</button>
     <button class="btn btn-sm btn-primary" id="createTaskBtn" onclick="submitCreateTask()"><i class="bi bi-check-lg me-1"></i>Tạo task</button>
   </div>
 </div></div></div>
@@ -2724,7 +2724,7 @@ a.task-link:hover {
     <input type="text" class="form-control" id="deleteConfirmInput" placeholder="Gõ CONFIRM..." style="background:var(--bg2);border-color:var(--border);color:var(--text);font-size:.9rem;text-align:center;letter-spacing:3px;text-transform:uppercase" oninput="document.getElementById('deleteTaskBtn').disabled=this.value!=='CONFIRM'">
   </div>
   <div class="modal-footer" style="border-color:var(--border-light)">
-    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">${_i('btn_cancel','Huỷ')}</button>
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Huỷ</button>
     <button class="btn btn-sm btn-outline-danger" id="deleteTaskBtn" disabled onclick="confirmDeleteTask()"><i class="bi bi-trash3 me-1"></i> Xoá vĩnh viễn</button>
   </div>
 </div></div></div>
@@ -3048,6 +3048,9 @@ function applyLangToStatic() {
       if (countSpan) btn.appendChild(countSpan);
     }
   });
+  // Update Kill All button
+  const kab = document.getElementById('killAllBtn');
+  if (kab) { kab.innerHTML = '<i class="bi bi-trash3 me-1"></i>' + _i('filter_kill_all','Kill all'); }
   // Update search placeholder
   const si = document.getElementById('searchInput');
   if (si) si.placeholder = _i('search_placeholder','Tìm toàn bộ...');
@@ -3656,7 +3659,7 @@ function editTaskStatus(current) {
   const cell = document.getElementById('modalStatusCell');
   if (!cell) return;
   const opts = ['ready','running','blocked','stale','done','error','killed'];
-  cell.innerHTML = `<select class="edit-inline-select" id="inlineStatusSelect">${opts.map(s => `<option value="${s}"${s===current?' selected':''}>${S_LABEL[s]||s}</option>`).join('')}</select> <button class="edit-save-btn" onclick="saveTaskStatus()"><i class="bi bi-check"></i></button> <button class="edit-cancel-btn" onclick="cancelTaskEdit('modalStatusCell')">${_i('btn_cancel','Huỷ')}</button>`;
+  cell.innerHTML = `<select class="edit-inline-select" id="inlineStatusSelect">${opts.map(s => `<option value="${s}"${s===current?' selected':''}>${S_LABEL[s]||s}</option>`).join('')}</select> <button class="edit-save-btn" onclick="saveTaskStatus()"><i class="bi bi-check"></i></button> <button class="edit-cancel-btn" onclick="cancelTaskEdit('modalStatusCell')">Huỷ</button>`;
 }
 
 async function saveTaskStatus() {
@@ -3681,7 +3684,7 @@ function editTaskOutput(current) {
   const pane = document.getElementById('pane-output');
   if (!pane) return;
   const text = current || '';
-  pane.innerHTML = `<textarea class="form-control" id="inlineOutputText" rows="10" style="font-family:var(--font-mono);font-size:.78rem;background:var(--bg2);border-color:var(--border);color:var(--text);resize:vertical">${h(text).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')}</textarea><div style="margin-top:6px;display:flex;gap:6px"><button class="edit-save-btn" onclick="saveTaskOutput()"><i class="bi bi-check"></i> ${_i('btn_save','Lưu')}</button><button class="edit-cancel-btn" onclick="cancelEditOutput()">${_i('btn_cancel','Huỷ')}</button></div>`;
+  pane.innerHTML = `<textarea class="form-control" id="inlineOutputText" rows="10" style="font-family:var(--font-mono);font-size:.78rem;background:var(--bg2);border-color:var(--border);color:var(--text);resize:vertical">${h(text).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')}</textarea><div style="margin-top:6px;display:flex;gap:6px"><button class="edit-save-btn" onclick="saveTaskOutput()"><i class="bi bi-check"></i> ${_i('btn_save','Lưu')}</button><button class="edit-cancel-btn" onclick="cancelEditOutput()">Huỷ</button></div>`;
 }
 
 async function saveTaskOutput() {
